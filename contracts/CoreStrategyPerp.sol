@@ -19,9 +19,11 @@ import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "./interfaces/perp/IVault.sol";
 import "./interfaces/perp/IBaseToken.sol";
 import "./interfaces/perp/IClearingHouseConfig.sol";
+import "./interfaces/perp/IExchange.sol";
 import "./lib/PerpMath.sol";
 import {IStrategyInsurance} from "./StrategyInsurance.sol";
 
+//TODO PERP add custom parameters: what leverage? When to rebalace? Etc
 struct CoreStrategyPerpConfig {
     // A portion of want token is depoisited into a lending platform to be used as
     // collateral. Short token is borrowed and compined with the remaining want token
@@ -103,8 +105,9 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         shortDecimals = IERC20Extended(_config.short).decimals();
 
         // initialise other interfaces
-        router = IUniswapV2Router01(_config.router);
-        weth = router.WETH();
+        //TODO PERP do we actually need a router?
+        //router = IUniswapV2Router01(_config.router);
+        //weth = router.WETH();
         maxReportDelay = 21600;
         minReportDelay = 14400;
         profitFactor = 1500;
@@ -120,6 +123,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
 
     function _setup() internal virtual {
         // For additional setup -> initialize custom contracts addresses
+        //TODO PERP additional setup
     }
 
     function name() external view override returns (string memory) {
@@ -226,13 +230,12 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     }
 
     function approveContracts() internal {
-        want.safeApprove(address(pool), uint256(-1));
-        short.safeApprove(address(pool), uint256(-1));
-        want.safeApprove(address(router), uint256(-1));
-        short.safeApprove(address(router), uint256(-1));
-        farmToken.safeApprove(address(router), uint256(-1));
-        IERC20(address(wantShortLP)).safeApprove(address(router), uint256(-1));
-        IERC20(address(wantShortLP)).safeApprove(farmMasterChef, uint256(-1));
+        //TODO PERP
+        // want.safeApprove(address(router), uint256(-1));
+        // short.safeApprove(address(router), uint256(-1));
+        // farmToken.safeApprove(address(router), uint256(-1));
+        // IERC20(address(wantShortLP)).safeApprove(address(router), uint256(-1));
+        // IERC20(address(wantShortLP)).safeApprove(farmMasterChef, uint256(-1));
     }
 
     function setSlippageConfig(
@@ -241,10 +244,12 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         uint256 _priceSourceDiffKeeper,
         bool _doPriceCheck
     ) external onlyAuthorized {
-        slippageAdj = _slippageAdj;
-        priceSourceDiffKeeper = _priceSourceDiffKeeper;
-        priceSourceDiffUser = _priceSourceDiffUser;
-        doPriceCheck = _doPriceCheck;
+        //TODO PERP 
+    //     slippageAdj = _slippageAdj;
+    //     priceSourceDiffKeeper = _priceSourceDiffKeeper;
+    //     priceSourceDiffUser = _priceSourceDiffUser;
+    //     doPriceCheck = _doPriceCheck;
+    // 
     }
 
     function setInsurance(address _insurance) external onlyAuthorized {
@@ -358,11 +363,12 @@ abstract contract CoreStrategyPerp is BaseStrategy {
 
     /// called by keeper to harvest rewards and either repay debt
     function _harvestInternal() internal returns (uint256 _wantHarvested) {
-        uint256 wantBefore = balanceOfWant();
-        /// harvest from farm & wantd on amt borrowed vs LP value either -> repay some debt or add to collateral
-        claimHarvest();
-        _sellHarvestWant();
-        _wantHarvested = balanceOfWant().sub(wantBefore);
+        //TODO PERP how does the farming work? Do we need to harvest and autocompound? Is it all automatic?
+        // uint256 wantBefore = balanceOfWant();
+        // /// harvest from farm & wantd on amt borrowed vs LP value either -> repay some debt or add to collateral
+        // claimHarvest();
+        // _sellHarvestWant();
+        // _wantHarvested = balanceOfWant().sub(wantBefore);
     }
 
     /**
@@ -375,8 +381,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         virtual
         returns (bool)
     {
-        // TODO check that _amount + AMOUNT_OF_TOKENS_LENT < AMOUNT_OF_TOKENS_TO_LEND_MAX
-        // There is no limit to how much we can supply
+        // TODO PERP: check if there is actually a limit, otherwise remove this function
         return false;
     }
 
@@ -411,7 +416,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         if (_amount < minDeploy || collateralCapReached(_amount)) {
             return;
         }
-        uint256 twapMarkPrice = getMarkTwapPrice();
+        uint256 twapMarkPrice = getBaseTokenMarkTwapPrice();
 
         // uint256 lpPrice = getLpPrice();
         // uint256 borrow =
@@ -772,7 +777,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     }
 
     function balanceLpInShort() public view returns (uint256) {
-        return countLpPooled().add(wantShortLP.balanceOf(address(this)));
+        //return countLpPooled().add(wantShortLP.balanceOf(address(this)));
     }
 
     /// get value of all LP in want currency
@@ -786,29 +791,29 @@ abstract contract CoreStrategyPerp is BaseStrategy {
 
     // value of borrowed tokens in value of want tokens
     function balanceDebtInShort() public view returns (uint256) {
-        // // Each debtToken is pegged 1:1 with the short token
+        //TODO PERP
         // return debtToken.balanceOf(address(this));
     }
 
     // value of borrowed tokens in value of want tokens
     // Uses current exchange price, not stored
     function balanceDebtInShortCurrent() internal returns (uint256) {
-        return debtToken.balanceOf(address(this));
+        //TODO PERP
+        //return debtToken.balanceOf(address(this));
     }
 
     // value of borrowed tokens in value of want tokens
     function balanceDebt() public view returns (uint256) {
-        return convertShortToWantLP(balanceDebtInShort());
+        //TODO PERP
+        //return convertShortToWantLP(balanceDebtInShort());
     }
 
-    /**
-     * Debt balance using price oracle
-     */
+    //TODO PERP
     function balanceDebtOracle() public view returns (uint256) {
         return convertShortToWantOracle(balanceDebtInShort());
     }
 
-    //Farm can be very different -> implement in the strategy directly
+    //TODO PERP
     function balancePendingHarvest() public view virtual returns (uint256);
 
     // reserves
@@ -817,15 +822,15 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     }
 
     function balanceShort() public view returns (uint256) {
-        return (short.balanceOf(address(this)));
+        //TODO PERP is it really needed?
     }
 
     function balanceShortWantEq() public view returns (uint256) {
-        return (convertShortToWantLP(short.balanceOf(address(this))));
+        //TODO PERP is it really needed?
     }
 
     function balanceLend() public view returns (uint256) {
-        return aToken.balanceOf(address(this));
+        //TODO PERP 
     }
 
     // Strategy specific
@@ -833,7 +838,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
 
     // lend want tokens to lending platform
     function _lendWant(uint256 amount) internal {
-        pool.deposit(address(want), amount, address(this), 0);
+        //TODO PERP DEPOSIT         
     }
 
     // borrow tokens woth _amount of want tokens
@@ -841,40 +846,31 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         internal
         returns (uint256 _borrowamount)
     {
-        _borrowamount = convertWantToShortLP(_amount);
-        _borrow(_borrowamount);
+        //TODO PERP         
     }
 
     function _borrow(uint256 borrowAmount) internal {
-        pool.borrow(address(short), borrowAmount, 2, 0, address(this));
+        //TODO PERP         
     }
 
-    // automatically repays debt using any short tokens held in wallet up to total debt value
     function _repayDebt() internal {
-        uint256 _bal = short.balanceOf(address(this));
-        if (_bal == 0) return;
-
-        uint256 _debt = balanceDebtInShort();
-        if (_bal < _debt) {
-            pool.repay(address(short), _bal, 2, address(this));
-        } else {
-            pool.repay(address(short), _debt, 2, address(this));
-        }
+        //TODO PERP         
     }
 
-    function _getHarvestInHarvestLp() internal view returns (uint256) {
-        uint256 harvest_lp = farmToken.balanceOf(address(farmTokenLP));
-        return harvest_lp;
-    }
+    //TODO PERP REWARDS
+    // function _getHarvestInHarvestLp() internal view returns (uint256) {
+    //     uint256 harvest_lp = farmToken.balanceOf(address(farmTokenLP));
+    //     return harvest_lp;
+    // }
 
-    function _getShortInHarvestLp() internal view returns (uint256) {
-        uint256 shortToken_lp = short.balanceOf(address(farmTokenLP));
-        return shortToken_lp;
-    }
+    // function _getShortInHarvestLp() internal view returns (uint256) {
+    //     uint256 shortToken_lp = short.balanceOf(address(farmTokenLP));
+    //     return shortToken_lp;
+    // }
 
-    function _redeemWant(uint256 _redeem_amount) internal {
-        pool.withdraw(address(want), _redeem_amount, address(this));
-    }
+    // function _redeemWant(uint256 _redeem_amount) internal {
+    //     pool.withdraw(address(want), _redeem_amount, address(this));
+    // }
 
     // // withdraws some LP worth _amount, converts all withdrawn LP to short token to repay debt
     // function _withdrawLpRebalance(uint256 _amount)
