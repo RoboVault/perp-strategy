@@ -1,22 +1,32 @@
+# use Ganache's forked mainnet mode as the default network
+# NOTE: You don't *have* to do this, but it is often helpful for testing
 networks:
-  default: avax-main-fork
+  default: polygon-main-fork
 
 # automatically fetch contract sources from Etherscan
 autofetch_sources: True
 
 # require OpenZepplin Contracts
 dependencies:
-  - OpenZeppelin/openzeppelin-contracts@4.6.0
+  - yearn/yearn-vaults@0.4.5
+  - OpenZeppelin/openzeppelin-contracts@4.5.0
+  - Uniswap/v3-core@1.0.0
+  - Uniswap/v3-periphery@1.3.0
+  - OpenZeppelin/openzeppelin-contracts-upgradeable@4.8.1
 
 # path remapping to support imports from GitHub/NPM
 compiler:
   solc:
-    version: 0.8.7
+    version: 0.8.15
     optimizer:
-        enabled: true
-        runs: 200
+      runs: 200
+      enabled: true
     remappings:
-      - "@openzeppelin=OpenZeppelin/openzeppelin-contracts@4.6.0"
+      - '@yearnvaults=yearn/yearn-vaults@0.4.5'
+      - '@openzeppelin=OpenZeppelin/openzeppelin-contracts@4.5.0'
+      - '@openzeppelin-upgradeable=OpenZeppelin/openzeppelin-contracts-upgradeable@4.8.1'
+      - '@uniswap/v3-core=Uniswap/v3-core@1.0.0'
+      - '@uniswap-periphery=Uniswap/v3-periphery@1.3.0'
 
 reports:
   exclude_contracts:
