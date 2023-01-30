@@ -52,7 +52,7 @@ library PerpMath {
     }
 
     function neg128(uint128 a) internal pure returns (int128) {
-        return -PerpSafeCast.toInt128(a);
+        return -PerpSafeCast.toInt128(int256(uint256(a)));
     }
 
     function divBy10_18(int256 value) internal pure returns (int256) {
@@ -75,7 +75,7 @@ library PerpMath {
     }
 
     function mulRatio(int256 value, uint24 ratio) internal pure returns (int256) {
-        return mulDiv(value, int256(ratio), 1e6);
+        return mulDiv(value, int256(uint256(ratio)), 1e6);
     }
 
     function divRatio(uint256 value, uint24 ratio) internal pure returns (uint256) {

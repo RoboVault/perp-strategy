@@ -82,7 +82,7 @@ contract StrategyInsurance {
         require(msg.sender == address(strategy));
     }
 
-    constructor(address _strategy) public {
+    constructor(address _strategy) {
         strategy = StrategyAPIExt(_strategy);
         want = IERC20(strategy.want());
     }

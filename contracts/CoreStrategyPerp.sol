@@ -19,29 +19,21 @@ import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "./interfaces/perp/IVault.sol";
 import "./interfaces/perp/IBaseToken.sol";
 import "./interfaces/perp/IClearingHouseConfig.sol";
+import "./interfaces/perp/IClearingHouse.sol";
 import "./interfaces/perp/IExchange.sol";
 import "./lib/PerpMath.sol";
 import {IStrategyInsurance} from "./StrategyInsurance.sol";
 
 //TODO PERP add custom parameters: what leverage? When to rebalace? Etc
 struct CoreStrategyPerpConfig {
-    // A portion of want token is depoisited into a lending platform to be used as
-    // collateral. Short token is borrowed and compined with the remaining want token
-    // and deposited into LP and farmed.
     address want;
     address short;
-    /*****************************/
-    /*            AMM            */
-    /*****************************/
-    // Liquidity pool address for base <-> short tokens @ the AMM.
-    // @note: the AMM router address does not need to be the same
-    // AMM as the farm, in fact the most liquid AMM is prefered to
-    // minimise slippage.
     address router;
     uint256 minDeploy;
     // PERP
-    IVault perpVault;
-    IBaseToken baseToken;
+    address perpVault;
+    address clearingHouse;
+    address baseToken;
 }
 
 interface IERC20Extended is IERC20 {
@@ -74,8 +66,6 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     // protocal limits & upper, target and lower thresholds for ratio of debt to collateral
     uint256 public collatLimit = 7500;
 
-    bool public doPriceCheck = true;
-
     // ERC20 Tokens;
     IERC20 public short;
     uint8 wantDecimals;
@@ -86,17 +76,15 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     uint256 public slippageAdj = 9900; // 99%
 
     uint256 constant BASIS_PRECISION = 10000;
-    uint256 public priceSourceDiffKeeper = 500; // 5% Default
-    uint256 public priceSourceDiffUser = 200; // 2% Default
 
     uint256 constant STD_PRECISION = 1e18;
     address weth;
     uint256 public minDeploy;
     IVault perpVault;
+    IClearingHouse clearingHouse;
     IBaseToken baseToken;
 
     constructor(address _vault, CoreStrategyPerpConfig memory _config)
-        public
         BaseStrategy(_vault)
     {
         // initialise token interfaces
@@ -110,12 +98,12 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         //weth = router.WETH();
         maxReportDelay = 21600;
         minReportDelay = 14400;
-        profitFactor = 1500;
         minDeploy = _config.minDeploy;
 
         // PERP
-        perpVault = _config.perpVault;
-        baseToken = _config.baseToken;
+        perpVault = IVault(_config.perpVault);
+        clearingHouse = IClearingHouse(_config.clearingHouse);
+        baseToken = IBaseToken(_config.baseToken);
 
         _setup();
         approveContracts();
@@ -231,11 +219,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
 
     function approveContracts() internal {
         //TODO PERP
-        // want.safeApprove(address(router), uint256(-1));
-        // short.safeApprove(address(router), uint256(-1));
-        // farmToken.safeApprove(address(router), uint256(-1));
-        // IERC20(address(wantShortLP)).safeApprove(address(router), uint256(-1));
-        // IERC20(address(wantShortLP)).safeApprove(farmMasterChef, uint256(-1));
+        want.safeApprove(address(perpVault), type(uint256).max);
     }
 
     function setSlippageConfig(
@@ -264,7 +248,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     }
 
     function setPerpVault(address _vault) external onlyAuthorized {
-        vault = _vault;
+        perpVault = IVault(_vault);
     }
 
     function setDebtThresholds(
@@ -300,46 +284,42 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         liquidatePosition(_amount);
     }
 
-    function liquidateAllToLend() internal {
-        _withdrawAllPooled();
-        _removeAllLp();
-        _lendWant(balanceOfWant());
-    }
+    
 
     function liquidateAllPositions()
         internal
         override
         returns (uint256 _amountFreed)
     {
-        (_amountFreed, ) = liquidateAllPositionsInternal();
+        //TODO PERP
     }
 
     function liquidateAllPositionsInternal()
         internal
         returns (uint256 _amountFreed, uint256 _loss)
     {
-        _withdrawAllPooled();
-        _removeAllLp();
+        // _withdrawAllPooled();
+        // _removeAllLp();
 
-        uint256 debtInShort = balanceDebtInShortCurrent();
-        uint256 balShort = balanceShort();
-        if (balShort >= debtInShort) {
-            _repayDebt();
-            if (balanceShortWantEq() > 0) {
-                (, _loss) = _swapExactShortWant(short.balanceOf(address(this)));
-            }
-        } else {
-            uint256 debtDifference = debtInShort.sub(balShort);
-            if (convertShortToWantLP(debtDifference) > 0) {
-                (_loss) = _swapWantShortExact(debtDifference);
-            } else {
-                _swapExactWantShort(uint256(1));
-            }
-            _repayDebt();
-        }
+        // uint256 debtInShort = balanceDebtInShortCurrent();
+        // uint256 balShort = balanceShort();
+        // if (balShort >= debtInShort) {
+        //     _repayDebt();
+        //     if (balanceShortWantEq() > 0) {
+        //         (, _loss) = _swapExactShortWant(short.balanceOf(address(this)));
+        //     }
+        // } else {
+        //     uint256 debtDifference = debtInShort.sub(balShort);
+        //     if (convertShortToWantLP(debtDifference) > 0) {
+        //         (_loss) = _swapWantShortExact(debtDifference);
+        //     } else {
+        //         _swapExactWantShort(uint256(1));
+        //     }
+        //     _repayDebt();
+        // }
 
-        _redeemWant(balanceLend());
-        _amountFreed = balanceOfWant();
+        // _redeemWant(balanceLend());
+        // _amountFreed = balanceOfWant();
     }
 
     /// rebalances RoboVault strat position to within target collateral range
@@ -347,7 +327,6 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         // ratio of amount borrowed to collateral
         uint256 collatRatio = calcCollateral();
         require(collatRatio <= collatLower || collatRatio >= collatUpper);
-        require(_testPriceSource(priceSourceDiffKeeper));
         _rebalanceCollateralInternal();
     }
 
@@ -355,7 +334,6 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     function rebalanceDebt() external onlyKeepers {
         uint256 debtRatio = calcDebtRatio();
         require(debtRatio < debtLower || debtRatio > debtUpper);
-        require(_testPriceSource(priceSourceDiffKeeper));
         _rebalanceDebtInternal();
     }
 
@@ -386,99 +364,58 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     }
 
     function _rebalanceCollateralInternal() internal {
-        uint256 collatRatio = calcCollateral();
-        uint256 shortPos = balanceDebt();
-        uint256 lendPos = balanceLend();
+        // uint256 collatRatio = calcCollateral();
+        // uint256 shortPos = balanceDebt();
+        // uint256 lendPos = balanceLend();
 
-        if (collatRatio > collatTarget) {
-            uint256 adjAmount =
-                (shortPos.sub(lendPos.mul(collatTarget).div(BASIS_PRECISION)))
-                    .mul(BASIS_PRECISION)
-                    .div(BASIS_PRECISION.add(collatTarget));
-            /// remove some LP use 50% of withdrawn LP to repay debt and half to add to collateral
-            _withdrawLpRebalanceCollateral(adjAmount.mul(2));
-            emit CollatRebalance(collatRatio, adjAmount);
-        } else if (collatRatio < collatTarget) {
-            uint256 adjAmount =
-                ((lendPos.mul(collatTarget).div(BASIS_PRECISION)).sub(shortPos))
-                    .mul(BASIS_PRECISION)
-                    .div(BASIS_PRECISION.add(collatTarget));
-            uint256 borrowAmt = _borrowWantEq(adjAmount);
-            _redeemWant(adjAmount);
-            _addToLP(borrowAmt);
-            _depositLp();
-            emit CollatRebalance(collatRatio, adjAmount);
-        }
+        // if (collatRatio > collatTarget) {
+        //     uint256 adjAmount =
+        //         (shortPos.sub(lendPos.mul(collatTarget).div(BASIS_PRECISION)))
+        //             .mul(BASIS_PRECISION)
+        //             .div(BASIS_PRECISION.add(collatTarget));
+        //     /// remove some LP use 50% of withdrawn LP to repay debt and half to add to collateral
+        //     _withdrawLpRebalanceCollateral(adjAmount.mul(2));
+        //     emit CollatRebalance(collatRatio, adjAmount);
+        // } else if (collatRatio < collatTarget) {
+        //     uint256 adjAmount =
+        //         ((lendPos.mul(collatTarget).div(BASIS_PRECISION)).sub(shortPos))
+        //             .mul(BASIS_PRECISION)
+        //             .div(BASIS_PRECISION.add(collatTarget));
+        //     uint256 borrowAmt = _borrowWantEq(adjAmount);
+        //     _redeemWant(adjAmount);
+        //     _addToLP(borrowAmt);
+        //     _depositLp();
+        //     emit CollatRebalance(collatRatio, adjAmount);
+        // }
     }
 
     // deploy assets according to vault strategy
     function _deploy(uint256 _amount) internal {
+        //TODO PERP: is there a limit? otherwise remove collateralCapReached check
         if (_amount < minDeploy || collateralCapReached(_amount)) {
             return;
         }
+
         uint256 twapMarkPrice = getBaseTokenMarkTwapPrice();
 
-        // uint256 lpPrice = getLpPrice();
-        // uint256 borrow =
-        //     collatTarget.mul(_amount).mul(1e18).div(
-        //         BASIS_PRECISION.mul(
-        //             (collatTarget.mul(lpPrice).div(BASIS_PRECISION).add(oPrice))
-        //         )
-        //     );
+        //Deposit into perp
+        perpVault.deposit(address(want), want.balanceOf(address(this)));
 
-        // uint256 debtAllocation = borrow.mul(lpPrice).div(1e18);
-        // uint256 lendNeeded = _amount.sub(debtAllocation);
-        // _lendWant(lendNeeded);
-        // _borrow(borrow);
-        // _addToLP(borrow);
-        // _depositLp();
+        //TODO PERP: make sure that we have USDC for fees
+
+
     }
-
-    // function getLpPrice() public view returns (uint256) {
-    //     (uint256 wantInLp, uint256 shortInLp) = getLpReserves();
-    //     uint256 exponent = IERC20Extended(address(short)).decimals();
-    //     return wantInLp.mul(1e18).div(shortInLp);
-    // }
-
-    // function getOraclePrice() public view returns (uint256) {
-    //     uint256 shortOPrice = oracle.getAssetPrice(address(short));
-    //     uint256 wantOPrice = oracle.getAssetPrice(address(want));
-    //     return
-    //         shortOPrice.mul(10**(wantDecimals.add(18).sub(shortDecimals))).div(
-    //             wantOPrice
-    //         );
-    // }
 
     function getBaseTokenMarkTwapPrice() public view returns (uint256) {
         IExchange exchange = IExchange(perpVault.getExchange());
-        IClearingHouseConfig config = perpVault.getClearingHouseConfig();
+        IClearingHouseConfig config = IClearingHouseConfig(perpVault.getClearingHouseConfig());
 
         uint160 sqrtMarkTwapX96 =
-            exchange.getSqrtMarkTwapX96(baseToken, config.getTwapInterval());
+            exchange.getSqrtMarkTwapX96(address(baseToken), config.getTwapInterval());
         uint256 markPriceX96 =
             PerpMath.formatSqrtPriceX96ToPriceX96(sqrtMarkTwapX96);
         uint256 markPrice = PerpMath.formatX96ToX10_18(markPriceX96);
         return markPrice;
-
-        // return
-        //     shortOPrice.mul(10**(wantDecimals.add(18).sub(shortDecimals))).div(
-        //         wantOPrice
-        //     );
-    }
-
-    /**
-     * @notice
-     *  Reverts if the difference in the price sources are >  priceDiff
-     */
-    function _testPriceSource(uint256 priceDiff) internal returns (bool) {
-        if (doPriceCheck) {
-            // uint256 oPrice = getOraclePrice();
-            // uint256 lpPrice = getLpPrice();
-            // uint256 priceSourceRatio = oPrice.mul(BASIS_PRECISION).div(lpPrice);
-            // return (priceSourceRatio > BASIS_PRECISION.sub(priceDiff) &&
-            //     priceSourceRatio < BASIS_PRECISION.add(priceDiff));
-        }
-        return true;
     }
 
     /**
@@ -540,7 +477,6 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         // _redeemWant(balanceLend().sub(_lendNeeded));
         // _borrow(_borrowAmt);
         // _addToLP(balanceShort());
-        // _depositLp();
     }
 
     function _rebalanceDebtInternal() internal {
@@ -646,7 +582,6 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         internal
         returns (uint256 _liquidatedAmount, uint256 _loss)
     {
-        // require(_testPriceSource(priceSourceDiffUser));
         // uint256 balanceWant = balanceOfWant();
         // if (_amountNeeded <= balanceWant) {
         //     return (_amountNeeded, 0);
@@ -697,10 +632,6 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         //     _liquidatedAmount = balanceOfWant().sub(balanceWant);
         //     _loss = slippage;
         // }
-    }
-
-    function enterMarket() internal {
-        return;
     }
 
     /**
@@ -942,7 +873,6 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     // }
 
     // Farm-specific methods
-    // function _depositLp() internal virtual;
 
     // function _withdrawFarm(uint256 _amount) internal virtual;
 

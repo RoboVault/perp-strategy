@@ -248,7 +248,7 @@ library UniswapV3Broker {
         (int56[] memory tickCumulatives, ) = IUniswapV3Pool(pool).observe(secondsAgos);
 
         // tick(imprecise as it's an integer) to price
-        return TickMath.getSqrtRatioAtTick(int24((tickCumulatives[1] - tickCumulatives[0]) / twapInterval));
+        return TickMath.getSqrtRatioAtTick(int24((tickCumulatives[1] - tickCumulatives[0]) / int32(twapInterval)));
     }
 
     // copied from UniswapV3-core
@@ -272,8 +272,8 @@ library UniswapV3Broker {
             initialized = masked != 0;
             // overflow/underflow is possible, but prevented externally by limiting both tickSpacing and tick
             next = initialized
-                ? (compressed - int24(bitPos - BitMath.mostSignificantBit(masked))) * tickSpacing
-                : (compressed - int24(bitPos)) * tickSpacing;
+                ? (compressed - int24(uint24(bitPos - BitMath.mostSignificantBit(masked)))) * tickSpacing
+                : (compressed - int24(uint24(bitPos))) * tickSpacing;
         } else {
             // start from the word of the next tick, since the current tick state doesn't matter
             (int16 wordPos, uint8 bitPos) = _getPositionOfInitializedTickWithinOneWord(compressed + 1);
@@ -285,8 +285,8 @@ library UniswapV3Broker {
             initialized = masked != 0;
             // overflow/underflow is possible, but prevented externally by limiting both tickSpacing and tick
             next = initialized
-                ? (compressed + 1 + int24(BitMath.leastSignificantBit(masked) - bitPos)) * tickSpacing
-                : (compressed + 1 + int24(type(uint8).max - bitPos)) * tickSpacing;
+                ? (compressed + 1 + int24(uint24(BitMath.leastSignificantBit(masked) - bitPos))) * tickSpacing
+                : (compressed + 1 + int24(uint24(type(uint8).max - bitPos))) * tickSpacing;
         }
     }
 
@@ -318,6 +318,6 @@ library UniswapV3Broker {
     /// @dev this function is Uniswap's TickBitmap.position()
     function _getPositionOfInitializedTickWithinOneWord(int24 tick) private pure returns (int16 wordPos, uint8 bitPos) {
         wordPos = int16(tick >> 8);
-        bitPos = uint8(tick % 256);
+        bitPos = uint8(uint24(tick) % 256);
     }
 }
