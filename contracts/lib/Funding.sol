@@ -6,7 +6,7 @@ import { PerpMath } from "./PerpMath.sol";
 import { OpenOrder } from "./OpenOrder.sol";
 import { PerpSafeCast } from "./PerpSafeCast.sol";
 import { PerpFixedPoint96 } from "./PerpFixedPoint96.sol";
-import { TickMath } from "@uniswap/v3-core/contracts/libraries/TickMath.sol";
+import { TickMath } from "./TickMath.sol";
 import { LiquidityAmounts } from "@uniswap-periphery/contracts/libraries/LiquidityAmounts.sol";
 import { SignedSafeMathUpgradeable } from "@openzeppelin-upgradeable/contracts/utils/math/SignedSafeMathUpgradeable.sol";
 

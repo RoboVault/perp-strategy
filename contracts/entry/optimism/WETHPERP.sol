@@ -44,7 +44,7 @@ contract WETHPERP is CoreStrategyPerp {
         return 0; // TODO
     }
 
-    function _depositLp() internal override {
+    function _depositLp() internal {
         // uint256 lpBalance = wantShortLP.balanceOf(address(this));
 
         // IZipRewards(farmMasterChef).deposit(
@@ -54,7 +54,7 @@ contract WETHPERP is CoreStrategyPerp {
         // );
     }
 
-    function _withdrawFarm(uint256 _amount) internal override {
+    function _withdrawFarm(uint256 _amount) internal {
         //TODO PERP
     }
 

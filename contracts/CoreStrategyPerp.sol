@@ -442,7 +442,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
      */
     function _calcDeployment(uint256 _amount)
         internal
-        returns (uint256 _lendNeeded, uint256 _borrow)
+        returns (uint256 _lendNeeded, uint256 _borrowAmt)
     {
         // uint256 oPrice = getOraclePrice();
         // uint256 lpPrice = getLpPrice();

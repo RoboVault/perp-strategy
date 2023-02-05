@@ -3,7 +3,7 @@ pragma solidity 0.8.15;
 
 import { IUniswapV3Pool } from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 import { IUniswapV3Factory } from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol";
-import { TickMath } from "@uniswap/v3-core/contracts/libraries/TickMath.sol";
+import { TickMath } from "./TickMath.sol";
 import { LiquidityAmounts } from "@uniswap-periphery/contracts/libraries/LiquidityAmounts.sol";
 import { PoolAddress } from "@uniswap-periphery/contracts/libraries/PoolAddress.sol";
 import { BitMath } from "@uniswap/v3-core/contracts/libraries/BitMath.sol";

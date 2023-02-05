@@ -2,7 +2,7 @@
 pragma solidity ^0.8;
 
 
-import {Funding} from "../../lib/Funding.sol";
+import "../../lib/Funding.sol";
 
 interface IExchange {
     /// @param amount when closing position, amount(uint256) == takerPositionSize(int256),
