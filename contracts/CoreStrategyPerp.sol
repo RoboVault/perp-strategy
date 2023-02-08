@@ -427,17 +427,16 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         uint256 amountInSTD = _amount.mul(uint256(10) ** (18 - wantDecimals));
         uint256 twapMarkPrice = getBaseTokenMarkTwapPrice();
         uint256 amountShortNeeded = amountInSTD.mul(STD_PRECISION).div(twapMarkPrice).div(uint256(2));
-        // IClearingHouse.AddLiquidityParams memory params = IClearingHouse.AddLiquidityParams({
-        //     baseToken: address(short),
-        //     base: amountShortNeeded,
-        //     quote: amountInSTD.div(2),
-        //     lowerTick: lower,
-        //     upperTick: upper,
-        //     minBase: amountShortNeeded.mul(slippageAdj).div(BASIS_PRECISION),
-        //     minQuote: (amountInSTD.div(2)).mul(slippageAdj).div(BASIS_PRECISION),
-        //     useTakerBalance: false,
-        //     deadline: block.timestamp + 300
-        // });
+        IClearingHouse.AddLiquidityParams memory params = IClearingHouse.AddLiquidityParams({
+            baseToken: address(short),
+            base: amountShortNeeded,
+            quote: amountInSTD.div(2),
+            lowerTick: lower,
+            upperTick: upper,
+            minBase: amountShortNeeded.mul(slippageAdj).div(BASIS_PRECISION),
+            minQuote: (amountInSTD.div(2)).mul(slippageAdj).div(BASIS_PRECISION),
+            deadline: block.timestamp + 300
+        });
         emit Debug(amountInSTD.div(2), 98);
         emit Debug((amountInSTD.div(2)).mul(slippageAdj).div(BASIS_PRECISION), 988);
         emit Debug(_amount, 99);
@@ -447,7 +446,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         emit Debug(uint24(lower), 102);
         emit Debug(uint24(upper), 103);
         
-        //_resp = clearingHouse.addLiquidity(params);
+        _resp = clearingHouse.addLiquidity(params);
         emit Debug(_resp.base, 104);
         emit Debug(_resp.quote, 105);
         emit Debug(_resp.fee, 106);
