@@ -9,6 +9,7 @@ def test_operation(
     # Deposit to the vault
     user_balance_before = token.balanceOf(user)
     token.approve(vault.address, amount, {"from": user})
+    #assert 1==2
     vault.deposit(amount, {"from": user})
     assert token.balanceOf(vault.address) == amount
     
