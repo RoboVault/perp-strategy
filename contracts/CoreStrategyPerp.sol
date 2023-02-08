@@ -19,10 +19,14 @@ import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "./interfaces/perp/IVault.sol";
 import "./interfaces/perp/IBaseToken.sol";
 import "./interfaces/perp/IClearingHouseConfig.sol";
-import "./interfaces/perp/IClearingHouse.sol";
+import "./interfaces/perp/IAccountBalance.sol";
+import {IClearingHouse} from "./interfaces/perp/IClearingHouse.sol";
 import "./interfaces/perp/IExchange.sol";
+import "./interfaces/perp/IMarketRegistry.sol";
 import "./lib/PerpMath.sol";
 import {IStrategyInsurance} from "./StrategyInsurance.sol";
+import "./lib/PerpLib.sol";
+
 
 //TODO PERP add custom parameters: what leverage? When to rebalace? Etc
 struct CoreStrategyPerpConfig {
@@ -33,7 +37,10 @@ struct CoreStrategyPerpConfig {
     // PERP
     address perpVault;
     address clearingHouse;
+    address marketRegistery;
     address baseToken;
+    int24 tickRangeMultiplier;
+    uint24 twapTime;
 }
 
 interface IERC20Extended is IERC20 {
@@ -54,6 +61,10 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     event CollatRebalance(
         uint256 indexed collatRatio,
         uint256 indexed adjAmount
+    );
+    event Debug(
+        uint256 indexed debug1,
+        uint256 indexed debug2
     );
 
     uint256 public collatUpper = 6700;
@@ -80,9 +91,12 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     uint256 constant STD_PRECISION = 1e18;
     address weth;
     uint256 public minDeploy;
-    IVault perpVault;
-    IClearingHouse clearingHouse;
-    IBaseToken baseToken;
+    IVault public perpVault;
+    IClearingHouse public clearingHouse;
+    IMarketRegistry public marketRegistery;
+    IBaseToken public baseToken;
+    int24 public tickRangeMultiplier;
+    uint24 public twapTime;
 
     constructor(address _vault, CoreStrategyPerpConfig memory _config)
         BaseStrategy(_vault)
@@ -103,7 +117,10 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         // PERP
         perpVault = IVault(_config.perpVault);
         clearingHouse = IClearingHouse(_config.clearingHouse);
+        marketRegistery = IMarketRegistry(_config.marketRegistery);
         baseToken = IBaseToken(_config.baseToken);
+        tickRangeMultiplier = _config.tickRangeMultiplier;
+        twapTime = _config.twapTime;
 
         _setup();
         approveContracts();
@@ -396,14 +413,45 @@ abstract contract CoreStrategyPerp is BaseStrategy {
             return;
         }
 
-        uint256 twapMarkPrice = getBaseTokenMarkTwapPrice();
-
         //Deposit into perp
-        perpVault.deposit(address(want), want.balanceOf(address(this)));
-
+        perpVault.deposit(address(want), _amount);
+        _addLiquidityToShortMarket(_amount);
         //TODO PERP: make sure that we have USDC for fees
 
 
+    }
+    // DEBUG TODO: REMOVE PUBLIC MODIFIER SHOULD BE INTERNAL 
+    function _addLiquidityToShortMarket(uint256 _amount) public returns (IClearingHouse.AddLiquidityResponse memory _resp) {
+        IUniswapV3Pool pool = IUniswapV3Pool(marketRegistery.getPool(address(short)));
+        (int24 lower, int24 upper) = PerpLib.determineTicks(pool, twapTime, tickRangeMultiplier);
+        uint256 amountInSTD = _amount.mul(uint256(10) ** (18 - wantDecimals));
+        uint256 twapMarkPrice = getBaseTokenMarkTwapPrice();
+        uint256 amountShortNeeded = amountInSTD.mul(STD_PRECISION).div(twapMarkPrice).div(uint256(2));
+        // IClearingHouse.AddLiquidityParams memory params = IClearingHouse.AddLiquidityParams({
+        //     baseToken: address(short),
+        //     base: amountShortNeeded,
+        //     quote: amountInSTD.div(2),
+        //     lowerTick: lower,
+        //     upperTick: upper,
+        //     minBase: amountShortNeeded.mul(slippageAdj).div(BASIS_PRECISION),
+        //     minQuote: (amountInSTD.div(2)).mul(slippageAdj).div(BASIS_PRECISION),
+        //     useTakerBalance: false,
+        //     deadline: block.timestamp + 300
+        // });
+        emit Debug(amountInSTD.div(2), 98);
+        emit Debug((amountInSTD.div(2)).mul(slippageAdj).div(BASIS_PRECISION), 988);
+        emit Debug(_amount, 99);
+        emit Debug(amountShortNeeded, 100);
+        emit Debug(amountShortNeeded.mul(slippageAdj).div(BASIS_PRECISION), 1000);
+        emit Debug(twapMarkPrice, 101);
+        emit Debug(uint24(lower), 102);
+        emit Debug(uint24(upper), 103);
+        
+        //_resp = clearingHouse.addLiquidity(params);
+        emit Debug(_resp.base, 104);
+        emit Debug(_resp.quote, 105);
+        emit Debug(_resp.fee, 106);
+        emit Debug(_resp.liquidity, 107);
     }
 
     function getBaseTokenMarkTwapPrice() public view returns (uint256) {
@@ -645,15 +693,16 @@ abstract contract CoreStrategyPerp is BaseStrategy {
 
     // calculate total value of vault assets
     function estimatedTotalAssets() public view override returns (uint256) {
-        // return balanceOfWant().add(balanceDeployed());
+        return balanceOfWant().add(balanceDeployed());
     }
 
     // calculate total value of vault assets
     function balanceDeployed() public view returns (uint256) {
-        // return
+        return uint256(perpVault.getAccountValue(address(this)));
         //     balanceLend().add(balanceLp()).add(balanceShortWantEq()).sub(
         //         balanceDebt()
         //     );
+        //return 0;
     }
 
     // debt ratio - used to trigger rebalancing of debt
@@ -663,6 +712,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
 
     // calculate debt / collateral - used to trigger rebalancing of debt & collateral
     function calcCollateral() public view returns (uint256) {
+
         // return balanceDebtOracle().mul(BASIS_PRECISION).div(balanceLend());
     }
 

@@ -61,6 +61,16 @@ def vault(conf):
     vault = interface.IVault(conf["vault"])
     yield vault
 
+# @pytest.fixture
+# def vault(pm, gov, rewards, guardian, management, token):
+#     Vault = pm(config["dependencies"][0]).Vault
+#     vault = guardian.deploy(Vault)
+#     vault.initialize(token, gov, rewards, "", "", guardian, management)
+#     vault.setDepositLimit(2 ** 256 - 1, {"from": gov})
+#     vault.setManagement(management, {"from": gov})
+#     assert vault.token() == token.address
+#     yield vault
+
 
 @pytest.fixture
 def brownie_template(gov, treasury):

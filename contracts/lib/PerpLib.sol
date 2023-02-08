@@ -19,7 +19,7 @@ import { IUniswapV3Factory } from "@uniswap/v3-core/contracts/interfaces/IUniswa
 import "./SafeUint128.sol";
 import "../interfaces/IUniswapV3PositionsNFT.sol";
 
-library UniswapManager {
+library PerpLib {
     using SafeERC20 for IERC20;
     using Address for address;
     using SafeMath for uint256;
@@ -71,7 +71,7 @@ library UniswapManager {
         uint24 _twapTime,
         int24 tickRangeMultiplier
     ) public view returns (int24, int24) {
-        /*
+        
         int24 tickSpacing = _pool.tickSpacing();
         int24 baseThreshold = tickSpacing * tickRangeMultiplier;
         if (_twapTime > 0) {
@@ -80,7 +80,7 @@ library UniswapManager {
             _observeTime[1] = 0;
             (int56[] memory _cumulativeTicks, ) = _pool.observe(_observeTime);
             int56 _averageTick =
-                (_cumulativeTicks[1] - _cumulativeTicks[0]) / _twapTime;
+                (_cumulativeTicks[1] - _cumulativeTicks[0]) / int24(_twapTime);
             return
                 PoolVariables.baseTicks(
                     int24(_averageTick),
@@ -91,7 +91,7 @@ library UniswapManager {
             (, int24 tick, , , , , ) = _pool.slot0();
             return PoolVariables.baseTicks(tick, baseThreshold, tickSpacing);
         }
-        */
+        
     }
 
     function getLiquidity(uint256 _tokenId)

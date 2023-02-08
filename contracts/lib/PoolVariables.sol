@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity >=0.5.0;
 
-import "./LiquidityAmounts.sol";
+//import "./LiquidityAmounts.sol";
+import { LiquidityAmounts } from "@uniswap-periphery/contracts/libraries/LiquidityAmounts.sol";
 import { IUniswapV3Pool } from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
 import "./TickMath.sol";
 import "./PositionKey.sol";
