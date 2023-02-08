@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.15;
 
-import {
-    SafeERC20,
-    IERC20,
-    Address
-} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {SafeERC20, IERC20, Address} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "../interfaces/IUniswapV2Router01.sol";
 import "../interfaces/IERC721.sol";
@@ -13,8 +9,8 @@ import {IStrategyInsurance} from "../StrategyInsurance.sol";
 import "./PoolVariables.sol";
 import {PoolAddress} from "@uniswap-periphery/contracts/libraries/PoolAddress.sol";
 import {ISwapRouter} from "@uniswap-periphery/contracts/interfaces/ISwapRouter.sol";
-import { IUniswapV3Pool } from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
-import { IUniswapV3Factory } from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol";
+import {IUniswapV3Pool} from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
+import {IUniswapV3Factory} from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol";
 //import "./OracleLibrary.sol";
 import "./SafeUint128.sol";
 import "../interfaces/IUniswapV3PositionsNFT.sol";
@@ -40,7 +36,7 @@ library PerpLib {
     event Rebalanced(uint256 tokenId, int24 _tickLower, int24 _tickUpper);
     event ExecutionResult(bool success, bytes result);
 
-    IUniswapV3PositionsNFT constant public nftManager =
+    IUniswapV3PositionsNFT public constant nftManager =
         IUniswapV3PositionsNFT(0xC36442b4a4522E871399CD717aBDD847Ab11FE88);
 
     struct positionInfo {
@@ -57,12 +53,13 @@ library PerpLib {
     address constant uniswapV3Factory =
         0x1F98431c8aD98523631AE4a59f267346ea31F984;
     IERC721 constant nft = IERC721(0xC36442b4a4522E871399CD717aBDD847Ab11FE88);
-    
+
     ISwapRouter constant router = ISwapRouter(address(0));
     address constant admin = address(0);
+
     //address public newAdmin = address(0);
     //constructor(address _router, address _admin) public {
-        //router = ISwapRouter(_router);
+    //router = ISwapRouter(_router);
     //    admin = _admin;
     //}
 
@@ -71,7 +68,6 @@ library PerpLib {
         uint24 _twapTime,
         int24 tickRangeMultiplier
     ) public view returns (int24, int24) {
-        
         int24 tickSpacing = _pool.tickSpacing();
         int24 baseThreshold = tickSpacing * tickRangeMultiplier;
         if (_twapTime > 0) {
@@ -79,8 +75,8 @@ library PerpLib {
             _observeTime[0] = _twapTime;
             _observeTime[1] = 0;
             (int56[] memory _cumulativeTicks, ) = _pool.observe(_observeTime);
-            int56 _averageTick =
-                (_cumulativeTicks[1] - _cumulativeTicks[0]) / int24(_twapTime);
+            int56 _averageTick = (_cumulativeTicks[1] - _cumulativeTicks[0]) /
+                int24(_twapTime);
             return
                 PoolVariables.baseTicks(
                     int24(_averageTick),
@@ -91,7 +87,6 @@ library PerpLib {
             (, int24 tick, , , , , ) = _pool.slot0();
             return PoolVariables.baseTicks(tick, baseThreshold, tickSpacing);
         }
-        
     }
 
     function getLiquidity(uint256 _tokenId)
@@ -157,7 +152,6 @@ library PerpLib {
         returns (bool _result)
     {
         // TODO: which implementation works in practice?
-
         /*
         (uint256 _token0, uint256 _token1) = getLpReserves(_tokenId);
         if((_token0 < 10000) || (_token1 < 10000)){
@@ -165,7 +159,6 @@ library PerpLib {
         } 
         return false;
         */
-        
         /*
         positionInfo memory pos = positions[_tokenId];
         // Slot0 Has the current price.
@@ -230,6 +223,19 @@ library PerpLib {
         //return priceX96.mul(1e18).div(FixedPoint96.Q96)
         return FullMath.mulDiv(priceX96, 1e18, FixedPoint96.Q96);
     }
+
+    //     //TODO: Consider if this function could take tokenId instead of pool
+    // function getTwapTick(IUniswapV3Pool _pool, uint32 _time)
+    //     public
+    //     view
+    //     returns (uint256)
+    // {
+    //     uint160 sqrtPriceX96 = getSqrtTwapX96(_pool, _time); // TODO: maybe use global twap time, recommended value is 60
+    //     //return getPriceX96FromSqrtPriceX96(sqrtPriceX96);
+    //     uint256 priceX96 = getPriceX96FromSqrtPriceX96(sqrtPriceX96);
+    //     //return priceX96.mul(1e18).div(FixedPoint96.Q96)
+    //     return TickMath.getTickAtSqrtRatio(priceX96);
+    // }
 
     // Attempt to take input tokens and balance them for the desired pool and range so they may be deposited.
     function _balanceProportion(
@@ -607,16 +613,15 @@ library PerpLib {
     }
 
     function _withdraw(uint256 _tokenId, uint128 _liquidity) internal {
-        (uint256 liqAmt0, uint256 liqAmt1) =
-            nftManager.decreaseLiquidity(
-                IUniswapV3PositionsNFT.DecreaseLiquidityParams({
-                    tokenId: _tokenId,
-                    liquidity: _liquidity,
-                    amount0Min: 0,
-                    amount1Min: 0,
-                    deadline: block.timestamp + 300
-                })
-            );
+        (uint256 liqAmt0, uint256 liqAmt1) = nftManager.decreaseLiquidity(
+            IUniswapV3PositionsNFT.DecreaseLiquidityParams({
+                tokenId: _tokenId,
+                liquidity: _liquidity,
+                amount0Min: 0,
+                amount1Min: 0,
+                deadline: block.timestamp + 300
+            })
+        );
 
         // This has to be done after DecreaseLiquidity to collect the tokens we
         // decreased and the fees at the same time.
@@ -660,8 +665,9 @@ library PerpLib {
     }
 
     function _destroyPosition(uint256 _tokenId) internal {
-        (, , , , , , , uint128 liquidity, , , , ) =
-            nftManager.positions(_tokenId);
+        (, , , , , , , uint128 liquidity, , , , ) = nftManager.positions(
+            _tokenId
+        );
         _withdraw(_tokenId, liquidity);
         nftManager.burn(_tokenId);
         emit Destroy(_tokenId, liquidity);
@@ -705,7 +711,7 @@ library PerpLib {
         // result contains whatever has returned the function
         emit ExecutionResult(success, result);
     }
-/*
+    /*
     function changeAdmin(address _admin) external {
         require(admin == msg.sender, "Not Administrator");
         newAdmin = _admin;
