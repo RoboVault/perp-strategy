@@ -43,6 +43,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     using SafeERC20 for IERC20;
     using Address for address;
     using SafeMath for uint256;
+    using SafeMath for uint128;
     using SafeMath for uint8;
 
     event DebtRebalance(
@@ -85,6 +86,9 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     IMarketRegistry public marketRegistery;
     IBaseToken public baseToken;
     int24 public tickRangeMultiplier;
+    uint256 public totalLiquidity = 0;
+    int24 lowerTick;
+    int24 upperTick;
     uint24 public twapTime;
 
     constructor(address _vault, CoreStrategyPerpConfig memory _config)
@@ -412,7 +416,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         IUniswapV3Pool pool = IUniswapV3Pool(
             marketRegistery.getPool(address(short))
         );
-        (int24 lower, int24 upper) = PerpLib.determineTicks(
+        (lowerTick, upperTick) = PerpLib.determineTicks(
             pool,
             twapTime,
             tickRangeMultiplier
@@ -428,12 +432,12 @@ abstract contract CoreStrategyPerp is BaseStrategy {
                 baseToken: address(short),
                 base: amountShortNeeded,
                 quote: amountInSTD.div(2),
-                lowerTick: lower,
-                upperTick: upper,
+                lowerTick: lowerTick,
+                upperTick: upperTick,
                 minBase: 0, //amountShortNeeded.mul(slippageAdj).div(BASIS_PRECISION),
                 minQuote: 0, //(amountInSTD.div(2)).mul(slippageAdj).div(BASIS_PRECISION),
                 useTakerBalance: bool(false),
-                deadline: block.timestamp + 300
+                deadline: block.timestamp.add(300)
             });
         emit Debug(amountInSTD.div(2), 98);
         emit Debug(
@@ -447,14 +451,51 @@ abstract contract CoreStrategyPerp is BaseStrategy {
             1000
         );
         emit Debug(twapMarkPrice, 101);
-        emit Debug(uint24(lower), 102);
-        emit Debug(uint24(upper), 103);
+        emit Debug(uint24(lowerTick), 102);
+        emit Debug(uint24(upperTick), 103);
 
         _resp = clearingHouse.addLiquidity(params);
         emit Debug(_resp.base, 104);
         emit Debug(_resp.quote, 105);
         emit Debug(_resp.fee, 106);
         emit Debug(_resp.liquidity, 107);
+        totalLiquidity = totalLiquidity.add(_resp.liquidity);
+    }
+
+    // DEBUG TODO: REMOVE PUBLIC MODIFIER SHOULD BE INTERNAL
+    function _removeAllCollateral(uint256 _amount) public {
+        //Withdraw from perp
+        perpVault.withdraw(address(want), _amount);
+    }
+
+    function _removeAllLiquidityToShortMarket(uint256 _amount)
+        public
+        returns (IClearingHouse.RemoveLiquidityResponse memory _resp)
+    {
+        // struct RemoveLiquidityParams {
+        // address baseToken;
+        // int24 lowerTick;
+        // int24 upperTick;
+        // uint128 liquidity;
+        // uint256 minBase;
+        // uint256 minQuote;
+        // uint256 deadline;
+        //}
+        IClearingHouse.RemoveLiquidityParams memory params = IClearingHouse
+            .RemoveLiquidityParams({
+                baseToken: address(short),
+                lowerTick: lowerTick,
+                upperTick: upperTick,
+                liquidity: uint128(totalLiquidity),
+                minBase: 0,
+                minQuote: 0,
+                deadline: block.timestamp.add(300)
+            });
+        _resp = clearingHouse.removeLiquidity(params);
+        emit Debug(_resp.base, 104);
+        emit Debug(_resp.quote, 105);
+        emit Debug(_resp.fee, 106);
+        totalLiquidity = totalLiquidity.sub(totalLiquidity);
     }
 
     function getBaseTokenMarkTwapPrice() public view returns (uint256) {
@@ -597,8 +638,8 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         // _removeAllLp();
     }
 
-    function _getTotalDebt() internal view returns (uint256) {
-        // return vault.strategies(address(this)).totalDebt;
+    function _getTotalDebt() public view returns (uint256) {
+        return vault.strategies(address(this)).totalDebt;
     }
 
     function liquidatePosition(uint256 _amountNeeded)
@@ -723,6 +764,10 @@ abstract contract CoreStrategyPerp is BaseStrategy {
 
     // calculate debt / collateral - used to trigger rebalancing of debt & collateral
     function calcCollateral() public view returns (uint256) {
+        return
+            perpVault.getFreeCollateral(address(this)).mul(BASIS_PRECISION).div(
+                _getTotalDebt()
+            );
         // return balanceDebtOracle().mul(BASIS_PRECISION).div(balanceLend());
     }
 
