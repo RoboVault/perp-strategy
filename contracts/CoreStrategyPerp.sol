@@ -13,6 +13,7 @@ import "./interfaces/perp/IVault.sol";
 import "./interfaces/perp/IBaseToken.sol";
 import "./interfaces/perp/IClearingHouseConfig.sol";
 import "./interfaces/perp/IAccountBalance.sol";
+import "./interfaces/perp/IOrderBook.sol";
 import {IClearingHouse} from "./interfaces/perp/IClearingHouse.sol";
 import "./interfaces/perp/IExchange.sol";
 import "./interfaces/perp/IMarketRegistry.sol";
@@ -87,8 +88,8 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     IBaseToken public baseToken;
     int24 public tickRangeMultiplier;
     uint256 public totalLiquidity = 0;
-    int24 lowerTick;
-    int24 upperTick;
+    int24 public lowerTick = 0;
+    int24 public upperTick = 0;
     uint24 public twapTime;
 
     constructor(address _vault, CoreStrategyPerpConfig memory _config)
@@ -292,7 +293,9 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     }
 
     function liquidatePositionAuth(uint256 _amount) external onlyAuthorized {
-        liquidatePosition(_amount);
+        (uint256 _liquidatedAmount, uint256 _loss) = liquidatePosition(_amount);
+        emit Debug(_liquidatedAmount, 700);
+        emit Debug(_loss, 701);
     }
 
     function liquidateAllPositions()
@@ -354,6 +357,11 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         // claimHarvest();
         // _sellHarvestWant();
         // _wantHarvested = balanceOfWant().sub(wantBefore);
+        if(upperTick == int24(0) && lowerTick == int24(0)) {
+            return 0;
+        }
+        IClearingHouse.RemoveLiquidityResponse memory response = _collectPendingFees();
+        return response.fee;
     }
 
     /**
@@ -404,8 +412,24 @@ abstract contract CoreStrategyPerp is BaseStrategy {
 
         //Deposit into perp
         perpVault.deposit(address(want), _amount);
+        if((upperTick != int24(0) || lowerTick != int24(0)) && totalLiquidity > 0){
+            _removeAllLiquidityToShortMarket();
+        }
+        _determineTicks();
         _addLiquidityToShortMarket(_amount);
         //TODO PERP: make sure that we have USDC for fees
+    }
+
+    function _determineTicks() public {
+        IUniswapV3Pool pool = IUniswapV3Pool(
+            marketRegistery.getPool(address(short))
+        );
+
+        (lowerTick, upperTick) = PerpLib.determineTicks(
+            pool,
+            twapTime,
+            tickRangeMultiplier
+        );
     }
 
     // DEBUG TODO: REMOVE PUBLIC MODIFIER SHOULD BE INTERNAL
@@ -413,14 +437,6 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         public
         returns (IClearingHouse.AddLiquidityResponse memory _resp)
     {
-        IUniswapV3Pool pool = IUniswapV3Pool(
-            marketRegistery.getPool(address(short))
-        );
-        (lowerTick, upperTick) = PerpLib.determineTicks(
-            pool,
-            twapTime,
-            tickRangeMultiplier
-        );
         uint256 amountInSTD = _amount.mul(uint256(10)**(18 - wantDecimals));
         uint256 twapMarkPrice = getBaseTokenMarkTwapPrice();
         uint256 amountShortNeeded = amountInSTD
@@ -437,7 +453,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
                 minBase: 0, //amountShortNeeded.mul(slippageAdj).div(BASIS_PRECISION),
                 minQuote: 0, //(amountInSTD.div(2)).mul(slippageAdj).div(BASIS_PRECISION),
                 useTakerBalance: bool(false),
-                deadline: block.timestamp.add(300)
+                deadline: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
             });
         emit Debug(amountInSTD.div(2), 98);
         emit Debug(
@@ -463,24 +479,45 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     }
 
     // DEBUG TODO: REMOVE PUBLIC MODIFIER SHOULD BE INTERNAL
-    function _removeAllCollateral(uint256 _amount) public {
+    function _removeCollateral(uint256 _amount) public {
         //Withdraw from perp
         perpVault.withdraw(address(want), _amount);
     }
 
-    function _removeAllLiquidityToShortMarket(uint256 _amount)
+    function _collectPendingFees() public returns (IClearingHouse.RemoveLiquidityResponse memory _resp) {
+        IClearingHouse.RemoveLiquidityParams memory params = IClearingHouse
+            .RemoveLiquidityParams({
+                baseToken: address(short),
+                lowerTick: lowerTick,
+                upperTick: upperTick,
+                liquidity: 0,
+                minBase: 0,
+                minQuote: 0,
+                deadline: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+            });
+        _resp = clearingHouse.removeLiquidity(params);
+        emit Debug(_resp.fee, 300);
+    }
+
+    function _closePosition() public returns (uint256 _base, uint256 _quote) {
+        IClearingHouse.ClosePositionParams memory params = IClearingHouse
+            .ClosePositionParams({
+                baseToken: address(short),
+                sqrtPriceLimitX96: 0,
+                oppositeAmountBound: 0,
+                deadline: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff,
+                referralCode: bytes32(0)
+            });
+        (_base, _quote) = clearingHouse.closePosition(params);
+        emit Debug(_base, 600);
+        emit Debug(_quote, 601);
+    }
+
+    function _removeAllLiquidityToShortMarket()
         public
         returns (IClearingHouse.RemoveLiquidityResponse memory _resp)
     {
-        // struct RemoveLiquidityParams {
-        // address baseToken;
-        // int24 lowerTick;
-        // int24 upperTick;
-        // uint128 liquidity;
-        // uint256 minBase;
-        // uint256 minQuote;
-        // uint256 deadline;
-        //}
+        _collectPendingFees();
         IClearingHouse.RemoveLiquidityParams memory params = IClearingHouse
             .RemoveLiquidityParams({
                 baseToken: address(short),
@@ -489,12 +526,14 @@ abstract contract CoreStrategyPerp is BaseStrategy {
                 liquidity: uint128(totalLiquidity),
                 minBase: 0,
                 minQuote: 0,
-                deadline: block.timestamp.add(300)
+                deadline: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
             });
         _resp = clearingHouse.removeLiquidity(params);
-        emit Debug(_resp.base, 104);
-        emit Debug(_resp.quote, 105);
-        emit Debug(_resp.fee, 106);
+        // emit Debug(_resp.base, 104);
+        // emit Debug(_resp.quote, 105);
+        // emit Debug(_resp.fee, 106);
+        // emit Debug(uint24(upperTick), 200);
+        // emit Debug(uint24(lowerTick), 201);
         totalLiquidity = totalLiquidity.sub(totalLiquidity);
     }
 
@@ -647,30 +686,33 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         override
         returns (uint256 _liquidatedAmount, uint256 _loss)
     {
-        // uint256 balanceWant = balanceOfWant();
-        // uint256 totalAssets = estimatedTotalAssets();
-        // // if estimatedTotalAssets is less than params.debtRatio it means there's
-        // // been a loss (ignores pending harvests). This type of loss is calculated
-        // // proportionally
-        // // This stops a run-on-the-bank if there's IL between harvests.
-        // uint256 newAmount = _amountNeeded;
-        // uint256 totalDebt = _getTotalDebt();
-        // if (totalDebt > totalAssets) {
-        //     uint256 ratio = totalAssets.mul(STD_PRECISION).div(totalDebt);
-        //     newAmount = _amountNeeded.mul(ratio).div(STD_PRECISION);
-        //     _loss = _amountNeeded.sub(newAmount);
-        // }
-        // // Liquidate the amount needed
-        // (, uint256 _slippage) = _withdraw(newAmount);
-        // _loss = _loss.add(_slippage);
-        // // NOTE: Maintain invariant `want.balanceOf(this) >= _liquidatedAmount`
-        // // NOTE: Maintain invariant `_liquidatedAmount + _loss <= _amountNeeded`
-        // _liquidatedAmount = balanceOfWant();
-        // if (_liquidatedAmount.add(_loss) > _amountNeeded) {
-        //     _liquidatedAmount = _amountNeeded.sub(_loss);
-        // } else {
-        //     _loss = _amountNeeded.sub(_liquidatedAmount);
-        // }
+        uint256 balanceWant = balanceOfWant();
+        uint256 totalAssets = estimatedTotalAssets();
+        // if estimatedTotalAssets is less than params.debtRatio it means there's
+        // been a loss (ignores pending harvests). This type of loss is calculated
+        // proportionally
+        // This stops a run-on-the-bank if there's IL between harvests.
+        uint256 newAmount = _amountNeeded;
+        uint256 totalDebt = _getTotalDebt();
+        if (totalDebt > totalAssets) {
+            uint256 ratio = totalAssets.mul(STD_PRECISION).div(totalDebt);
+            newAmount = _amountNeeded.mul(ratio).div(STD_PRECISION);
+            _loss = _amountNeeded.sub(newAmount);
+        }
+        // Liquidate the amount needed
+        (, uint256 _slippage) = _withdraw(newAmount);
+        _loss = _loss.add(_slippage);
+        // NOTE: Maintain invariant `want.balanceOf(this) >= _liquidatedAmount`
+        // NOTE: Maintain invariant `_liquidatedAmount + _loss <= _amountNeeded`
+        _liquidatedAmount = balanceOfWant();
+        if (_liquidatedAmount.add(_loss) > _amountNeeded) {
+            _liquidatedAmount = _amountNeeded.sub(_loss);
+        } else {
+            _loss = _amountNeeded.sub(_liquidatedAmount);
+        }
+        emit Debug(_liquidatedAmount, 400);
+        emit Debug(_loss, 401);
+        emit Debug(newAmount, 402);
     }
 
     /**
@@ -683,13 +725,24 @@ abstract contract CoreStrategyPerp is BaseStrategy {
      * @param _amountNeeded `want` amount to liquidate
      */
     function _withdraw(uint256 _amountNeeded)
-        internal
+        public
         returns (uint256 _liquidatedAmount, uint256 _loss)
     {
-        // uint256 balanceWant = balanceOfWant();
-        // if (_amountNeeded <= balanceWant) {
-        //     return (_amountNeeded, 0);
-        // }
+        uint256 balanceWant = balanceOfWant();
+        if (_amountNeeded <= balanceWant) {
+            emit Debug(_amountNeeded, 500);
+            return (_amountNeeded, 0);
+        }
+        _removeAllLiquidityToShortMarket();
+        _removeCollateral(_amountNeeded);
+        if(_getTotalDebt() > _amountNeeded){
+            _addLiquidityToShortMarket(_getTotalDebt().sub(_amountNeeded));
+            emit Debug(_getTotalDebt().sub(_amountNeeded), 503);
+        }
+        emit Debug(_amountNeeded, 501);
+        emit Debug(balanceOfWant(), 502);
+        return (_amountNeeded, 0);
+        
         // uint256 balanceDeployed = balanceDeployed();
         // // stratPercent: Percentage of the deployed capital we want to liquidate.
         // uint256 stratPercent =
