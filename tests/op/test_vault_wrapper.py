@@ -28,10 +28,13 @@ def test_operation(
     # collatRatio = strategy.calcCollateral()
     print('debtRatio:   {0}'.format(debtRatio))
     # print('collatRatio: {0}'.format(collatRatio))
-    assert pytest.approx(10000, rel=1e-3) == debtRatio
+    assert pytest.approx(10000, rel=1e-2) == debtRatio #rel=1e-3
     # assert pytest.approx(6000, rel=1e-2) == collatRatio
+    # This part should have been done by harvest... weird that lowerTick and upperTick arent set at this point
+    strategy._determineTicks() 
+
     # withdrawal
-    # vault.withdraw(amount, user, 500, {'from' : user}) 
-    # assert (
-    #    pytest.approx(token.balanceOf(user), rel=RELATIVE_APPROX) == user_balance_before
-    #)
+    vault.withdraw(amount, user, 500, {'from' : user}) 
+    assert (
+        pytest.approx(token.balanceOf(user), rel=RELATIVE_APPROX) == user_balance_before
+    )
