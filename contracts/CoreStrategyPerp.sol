@@ -646,7 +646,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         // emit Debug(uint24(upperTick), 200);
         // emit Debug(uint24(lowerTick), 201);
         totalLiquidity = totalLiquidity.sub(totalLiquidity);
-        _closePosition();
+        //_closePosition(); //TODO: Bring back later
     }
 
     /**
