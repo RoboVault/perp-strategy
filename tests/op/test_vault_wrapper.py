@@ -19,7 +19,7 @@ def test_operation(
     strategy.harvest()
     strat = strategy
     assert pytest.approx(strategy.estimatedTotalAssets(), rel=RELATIVE_APPROX) == amount
-    #assert 1==2
+    assert 1==2
     # # make tiny swap to avoid issue where dif
     # swapPct = 1 / 1000
     # offSetDebtRatioHigh(strategy, lp_token, token, Contract, swapPct, router, whale) 
