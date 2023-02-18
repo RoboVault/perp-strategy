@@ -27,6 +27,7 @@ struct CoreStrategyPerpConfig {
     address short;
     address router;
     uint256 minDeploy;
+    uint256 minProfit;
     // PERP
     address perpVault;
     //address clearingHouse;
@@ -58,11 +59,9 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     );
     event Debug(uint256 indexed debug1, uint256 indexed debug2);
 
-    uint256 public collatUpper = 6700;
-    uint256 public collatTarget = 6000;
-    uint256 public collatLower = 5300;
-    uint256 public debtUpper = 10190;
-    uint256 public debtLower = 9810;
+    uint256 public debtUpper = 5100;
+    uint256 public debtMultiple = 20000;
+    uint256 public debtLower = 4900;
     uint256 public rebalancePercent = 10000; // 100% (how far does rebalance of debt move towards 100% from threshold)
 
     // protocal limits & upper, target and lower thresholds for ratio of debt to collateral
@@ -82,13 +81,14 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     uint256 constant STD_PRECISION = 1e18;
     address weth;
     uint256 public minDeploy;
+    uint256 public minProfit;
     IVault public perpVault;
     IClearingHouse public clearingHouse;
     IOrderBook public orderBook;
     IMarketRegistry public marketRegistery;
     IBaseToken public baseToken;
     int24 public tickRangeMultiplier;
-    uint256 public totalLiquidity = 0;
+    //uint256 public totalLiquidity = 0;
     int24 public lowerTick = 0;
     int24 public upperTick = 0;
     uint24 public twapTime;
@@ -101,13 +101,11 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         wantDecimals = IERC20Extended(_config.want).decimals();
         shortDecimals = IERC20Extended(_config.short).decimals();
 
-        // initialise other interfaces
-        //TODO PERP do we actually need a router?
-        //router = IUniswapV2Router01(_config.router);
-        //weth = router.WETH();
+        // initialize other interfaces
         maxReportDelay = 21600;
         minReportDelay = 14400;
         minDeploy = _config.minDeploy;
+        minProfit = _config.minProfit;
 
         // PERP
         perpVault = IVault(_config.perpVault);
@@ -118,17 +116,140 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         tickRangeMultiplier = _config.tickRangeMultiplier;
         twapTime = _config.twapTime;
 
-        _setup();
         approveContracts();
-    }
-
-    function _setup() internal virtual {
-        // For additional setup -> initialize custom contracts addresses
-        //TODO PERP additional setup
     }
 
     function name() external view override returns (string memory) {
         return "StrategyHedgedPerp";
+    }
+
+    // reserves
+    function balanceOfWant() public view returns (uint256) {
+        return (want.balanceOf(address(this)));
+    }
+
+    // Total liquidity in AMM
+    function totalLiquidity() public view returns (uint256 _liquidity) {
+        OpenOrder.Info memory info = orderBook.getOpenOrder(address(this), address(short), lowerTick, upperTick);
+        return uint256(info.liquidity);
+    }
+
+    function getBaseTokenMarkTwapPrice() public view returns (uint256) {
+        IExchange exchange = IExchange(perpVault.getExchange());
+        IClearingHouseConfig config = IClearingHouseConfig(
+            perpVault.getClearingHouseConfig()
+        );
+
+        uint160 sqrtMarkTwapX96 = exchange.getSqrtMarkTwapX96(
+            address(baseToken),
+            config.getTwapInterval()
+        );
+        uint256 markPriceX96 = PerpMath.formatSqrtPriceX96ToPriceX96(
+            sqrtMarkTwapX96
+        );
+
+        return PerpMath.formatX96ToX10_18(markPriceX96);
+    }
+    
+    // Get short Mark Price (used for lending market) which is derived from Uniswap TWAP 
+    function getBaseTokenMarkTwapTick() public view returns (int24) {
+        IExchange exchange = IExchange(perpVault.getExchange());
+        IClearingHouseConfig config = IClearingHouseConfig(
+            perpVault.getClearingHouseConfig()
+        );
+
+        uint160 sqrtMarkTwapX96 = exchange.getSqrtMarkTwapX96(
+            address(baseToken),
+            config.getTwapInterval()
+        );
+        uint256 markPriceX96 = PerpMath.formatSqrtPriceX96ToPriceX96(
+            sqrtMarkTwapX96
+        );
+        return TickMath.getTickAtSqrtRatio(sqrtMarkTwapX96);
+    }
+
+    // calculate total value of vault assets
+    function estimatedTotalAssets() public view override returns (uint256) {
+        return balanceOfWant().add(balanceDeployed());
+    }
+
+    // calculate total value of vault assets
+    function balanceDeployed() public view returns (uint256) {
+        return uint256(perpVault.getAccountValue(address(this)));
+    }
+
+    // debt ratio - used to trigger rebalancing of debt
+    function calcDebtRatio() public view returns (uint256) {
+        uint256 shortAmount = orderBook.getTotalOrderDebt(
+            address(this),
+            address(short),
+            true
+        );
+        uint256 longAmount = orderBook.getTotalOrderDebt(
+            address(this),
+            address(short),
+            false
+        );
+        shortAmount = shortAmount.mul(getBaseTokenMarkTwapPrice()).div(
+            uint256(10)**uint256(18)
+        );
+        uint256 ratio = _getTotalDebt()
+            .div(2)
+            .mul(uint256(10)**uint256(18).sub(wantDecimals))
+            .mul(BASIS_PRECISION)
+            .div(shortAmount);
+        return ratio;
+    }
+
+    // calculate debt / collateral - used to trigger re-balancing of debt & collateral
+    function calcCollateral() public view returns (uint256) {
+        return
+            perpVault.getFreeCollateral(address(this)).mul(BASIS_PRECISION).div(
+                _getTotalDebt()
+            );
+    }
+
+    // View pending fees (not optimism) in USD terms
+    function pendingRewards() public view returns (uint256) {
+        return orderBook.getPendingFee(
+            address(this),
+            address(short),
+            lowerTick,
+            upperTick
+        );
+    }
+
+    function _getTotalDebt() internal view returns (uint256) {
+        return vault.strategies(address(this)).totalDebt;
+    }
+
+    function setSlippageConfig(
+        uint256 _slippageAdj
+    ) external onlyAuthorized {
+        slippageAdj = _slippageAdj;
+    }
+
+    function setInsurance(address _insurance) external onlyAuthorized {
+        require(address(insurance) == address(0));
+        insurance = IStrategyInsurance(_insurance);
+    }
+
+    function setPerpVault(address _vault) external onlyAuthorized {
+        perpVault = IVault(_vault);
+    }
+
+    function setDebtThresholds(
+        uint256 _lower,
+        uint256 _upper,
+        uint256 _debtMultiple
+    ) external onlyAuthorized {
+        require(_lower <= BASIS_PRECISION);
+        require(_lower < _upper);
+        require(_debtMultiple <= BASIS_PRECISION.mul(10));
+        require(_lower < _upper);
+        debtUpper = _upper;
+        debtLower = _lower;
+        debtMultiple = _debtMultiple;
     }
 
     function prepareReturn(uint256 _debtOutstanding)
@@ -157,9 +278,8 @@ abstract contract CoreStrategyPerp is BaseStrategy {
             _debtPayment = balanceOfWant();
             _loss = totalDebt.sub(totalAssets);
         }
-
-        if (balancePendingHarvest() > 100) {
-            //TODO: this should change based on the asset, we should only harvest if it is worth it gas-wise
+        
+        if (pendingRewards() > minProfit) {
             _profit += _harvestInternal();
         }
 
@@ -198,62 +318,12 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         }
     }
 
-    function prepareMigration(address _newStrategy) internal override {
-        //liquidateAllPositionsInternal();
-        liquidateAllPositions();
-    }
-
-    function ethToWant(uint256 _amtInWei)
-        public
-        view
-        virtual
-        override
-        returns (uint256)
-    {
-        // This is not currently used by the strategies and is
-        // being removed to reduce the size of the contract
-        return 0;
-    }
-
-    function getTokenOutPath(address _token_in, address _token_out)
-        internal
-        view
-        returns (address[] memory _path)
-    {
-        bool is_weth = _token_in == address(weth) ||
-            _token_out == address(weth);
-        _path = new address[](is_weth ? 2 : 3);
-        _path[0] = _token_in;
-        if (is_weth) {
-            _path[1] = _token_out;
-        } else {
-            _path[1] = address(weth);
-            _path[2] = _token_out;
-        }
-    }
-
     function approveContracts() internal {
-        //TODO PERP
         want.safeApprove(address(perpVault), type(uint256).max);
     }
-
-    function setSlippageConfig(
-        uint256 _slippageAdj,
-        uint256 _priceSourceDiffUser,
-        uint256 _priceSourceDiffKeeper,
-        bool _doPriceCheck
-    ) external onlyAuthorized {
-        //TODO PERP
-        //     slippageAdj = _slippageAdj;
-        //     priceSourceDiffKeeper = _priceSourceDiffKeeper;
-        //     priceSourceDiffUser = _priceSourceDiffUser;
-        //     doPriceCheck = _doPriceCheck;
-        //
-    }
-
-    function setInsurance(address _insurance) external onlyAuthorized {
-        require(address(insurance) == address(0));
-        insurance = IStrategyInsurance(_insurance);
+    
+    function prepareMigration(address _newStrategy) internal override {
+        liquidateAllPositions();
     }
 
     function migrateInsurance(address _newInsurance) external onlyGovernance {
@@ -262,43 +332,8 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         insurance = IStrategyInsurance(_newInsurance);
     }
 
-    function setPerpVault(address _vault) external onlyAuthorized {
-        perpVault = IVault(_vault);
-    }
-
-    function setDebtThresholds(
-        uint256 _lower,
-        uint256 _upper,
-        uint256 _rebalancePercent
-    ) external onlyAuthorized {
-        require(_lower <= BASIS_PRECISION);
-        require(_rebalancePercent <= BASIS_PRECISION);
-        require(_upper >= BASIS_PRECISION);
-        rebalancePercent = _rebalancePercent;
-        debtUpper = _upper;
-        debtLower = _lower;
-    }
-
-    function setCollateralThresholds(
-        uint256 _lower,
-        uint256 _target,
-        uint256 _upper,
-        uint256 _limit
-    ) external onlyAuthorized {
-        require(_limit <= BASIS_PRECISION);
-        collatLimit = _limit;
-        require(collatLimit > _upper);
-        require(_upper >= _target);
-        require(_target >= _lower);
-        collatUpper = _upper;
-        collatTarget = _target;
-        collatLower = _lower;
-    }
-
     function liquidatePositionAuth(uint256 _amount) external onlyAuthorized {
         (uint256 _liquidatedAmount, uint256 _loss) = liquidatePosition(_amount);
-        emit Debug(_liquidatedAmount, 700);
-        emit Debug(_loss, 701);
     }
 
     function liquidateAllPositions()
@@ -309,369 +344,38 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         liquidateAllToLend();
         _removeCollateral(perpVault.getFreeCollateral(address(this)));
     }
+    
 
-    // function liquidateAllPositionsInternal()
-    //     internal
-    //     returns (uint256 _amountFreed, uint256 _loss)
-    // {
-    //     // _withdrawAllPooled();
-    //     // _removeAllLp();
-    //     // uint256 debtInShort = balanceDebtInShortCurrent();
-    //     // uint256 balShort = balanceShort();
-    //     // if (balShort >= debtInShort) {
-    //     //     _repayDebt();
-    //     //     if (balanceShortWantEq() > 0) {
-    //     //         (, _loss) = _swapExactShortWant(short.balanceOf(address(this)));
-    //     //     }
-    //     // } else {
-    //     //     uint256 debtDifference = debtInShort.sub(balShort);
-    //     //     if (convertShortToWantLP(debtDifference) > 0) {
-    //     //         (_loss) = _swapWantShortExact(debtDifference);
-    //     //     } else {
-    //     //         _swapExactWantShort(uint256(1));
-    //     //     }
-    //     //     _repayDebt();
-    //     // }
-    //     // _redeemWant(balanceLend());
-    //     // _amountFreed = balanceOfWant();
-    // }
-
-    /// rebalances RoboVault strat position to within target collateral range
-    function rebalanceCollateral() external onlyKeepers {
-        // ratio of amount borrowed to collateral
-        uint256 collatRatio = calcCollateral();
-        require(collatRatio <= collatLower || collatRatio >= collatUpper);
-        _rebalanceCollateralInternal();
-    }
-
-    /// rebalances RoboVault holding of short token vs LP to within target collateral range
+    /// re-balances vault holding of short token vs LP to within target collateral range
     function rebalanceDebt() external onlyKeepers {
         uint256 debtRatio = calcDebtRatio();
         require(debtRatio < debtLower || debtRatio > debtUpper);
         _rebalanceDebtInternal();
+        
     }
 
-    function claimHarvest() internal virtual;
-
-    /// called by keeper to harvest rewards and either repay debt
-    function _harvestInternal() internal returns (uint256 _wantHarvested) {
-        //TODO PERP how does the farming work? Do we need to harvest and autocompound? Is it all automatic?
-        if (upperTick == int24(0) && lowerTick == int24(0)) {
-            return 0;
-        }
-        IClearingHouse.RemoveLiquidityResponse
-            memory response = _collectPendingFees();
-        return response.fee;
-    }
-
-    /**
-     * Checks if collateral cap is reached or if deploying `_amount` will make it reach the cap
-     * returns true if the cap is reached
-     */
-    function collateralCapReached(uint256 _amount)
-        public
-        view
-        virtual
-        returns (bool)
-    {
-        // TODO PERP: check if there is actually a limit, otherwise remove this function
-        return false;
-    }
-
-    function _rebalanceCollateralInternal() internal {
-        // uint256 collatRatio = calcCollateral();
-        // uint256 shortPos = balanceDebt();
-        // uint256 lendPos = balanceLend();
-        // if (collatRatio > collatTarget) {
-        //     uint256 adjAmount =
-        //         (shortPos.sub(lendPos.mul(collatTarget).div(BASIS_PRECISION)))
-        //             .mul(BASIS_PRECISION)
-        //             .div(BASIS_PRECISION.add(collatTarget));
-        //     /// remove some LP use 50% of withdrawn LP to repay debt and half to add to collateral
-        //     _withdrawLpRebalanceCollateral(adjAmount.mul(2));
-        //     emit CollatRebalance(collatRatio, adjAmount);
-        // } else if (collatRatio < collatTarget) {
-        //     uint256 adjAmount =
-        //         ((lendPos.mul(collatTarget).div(BASIS_PRECISION)).sub(shortPos))
-        //             .mul(BASIS_PRECISION)
-        //             .div(BASIS_PRECISION.add(collatTarget));
-        //     uint256 borrowAmt = _borrowWantEq(adjAmount);
-        //     _redeemWant(adjAmount);
-        //     _addToLP(borrowAmt);
-        //     _depositLp();
-        //     emit CollatRebalance(collatRatio, adjAmount);
-        // }
-    }
-
-    // deploy assets according to vault strategy
-    function _deploy(uint256 _amount) internal {
-        //TODO PERP: is there a limit? otherwise remove collateralCapReached check
-        if (_amount < minDeploy || collateralCapReached(_amount)) {
-            return;
-        }
-
-        //Deposit into perp
-        perpVault.deposit(address(want), _amount);
-        _deployFromLend(_amount);
-        //TODO PERP: make sure that we have USDC for fees
-    }
-
-    function _determineTicks() public {
-        IUniswapV3Pool pool = IUniswapV3Pool(
-            marketRegistery.getPool(address(short))
-        );
-
-        (lowerTick, upperTick) = PerpLib.determineTicks(
-            pool,
-            twapTime,
-            tickRangeMultiplier
-        );
-    }
-
-    // DEBUG TODO: REMOVE PUBLIC MODIFIER SHOULD BE INTERNAL
-    function _addLiquidityToShortMarket(uint256 _amount)
-        public
-        returns (IClearingHouse.AddLiquidityResponse memory _resp)
-    {
-        uint256 amountInSTD = _amount.mul(uint256(10)**(18 - wantDecimals));
-        uint256 twapMarkPrice = getBaseTokenMarkTwapPrice();
-        uint256 amountShortNeeded = amountInSTD
-            .mul(STD_PRECISION)
-            .div(twapMarkPrice)
-            .div(uint256(2));
-        IClearingHouse.AddLiquidityParams memory params = IClearingHouse
-            .AddLiquidityParams({
-                baseToken: address(short),
-                base: amountShortNeeded,
-                quote: amountInSTD.div(2),
-                lowerTick: lowerTick,
-                upperTick: upperTick,
-                minBase: 0, //amountShortNeeded.mul(slippageAdj).div(BASIS_PRECISION),
-                minQuote: 0, //(amountInSTD.div(2)).mul(slippageAdj).div(BASIS_PRECISION),
-                useTakerBalance: bool(false),
-                deadline: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-            });
-        emit Debug(amountInSTD.div(2), 98);
-        emit Debug(
-            (amountInSTD.div(2)).mul(slippageAdj).div(BASIS_PRECISION),
-            988
-        );
-        emit Debug(_amount, 99);
-        emit Debug(amountShortNeeded, 100);
-        emit Debug(
-            amountShortNeeded.mul(slippageAdj).div(BASIS_PRECISION),
-            1000
-        );
-        emit Debug(twapMarkPrice, 101);
-        emit Debug(uint24(lowerTick), 102);
-        emit Debug(uint24(upperTick), 103);
-
-        _resp = clearingHouse.addLiquidity(params);
-        emit Debug(_resp.base, 104);
-        emit Debug(_resp.quote, 105);
-        emit Debug(_resp.fee, 106);
-        emit Debug(_resp.liquidity, 107);
-        totalLiquidity = totalLiquidity.add(_resp.liquidity);
-    }
-
-    // DEBUG TODO: REMOVE PUBLIC MODIFIER SHOULD BE INTERNAL
-    function _removeCollateral(uint256 _amount) public {
-        //Withdraw from perp
-        perpVault.withdraw(address(want), _amount);
-    }
-
-    function _collectPendingFees()
-        public
-        returns (IClearingHouse.RemoveLiquidityResponse memory _resp)
-    {
-        IClearingHouse.RemoveLiquidityParams memory params = IClearingHouse
-            .RemoveLiquidityParams({
-                baseToken: address(short),
-                lowerTick: lowerTick,
-                upperTick: upperTick,
-                liquidity: 0,
-                minBase: 0,
-                minQuote: 0,
-                deadline: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-            });
-        _resp = clearingHouse.removeLiquidity(params);
-        emit Debug(_resp.fee, 300);
-        emit Debug(uint24(lowerTick), 301);
-        emit Debug(uint24(upperTick), 302);
-    }
-
-    function _closePosition() public returns (uint256 _base, uint256 _quote) {
-        IClearingHouse.ClosePositionParams memory params = IClearingHouse
-            .ClosePositionParams({
-                baseToken: address(short),
-                sqrtPriceLimitX96: 0,
-                oppositeAmountBound: 0,
-                deadline: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff,
-                referralCode: bytes32(bytes("ROBO"))
-            });
-        (_base, _quote) = clearingHouse.closePosition(params);
-        emit Debug(_base, 600);
-        emit Debug(_quote, 601);
-    }
-
-    function getBaseTokenMarkTwapPrice() public view returns (uint256) {
-        IExchange exchange = IExchange(perpVault.getExchange());
-        IClearingHouseConfig config = IClearingHouseConfig(
-            perpVault.getClearingHouseConfig()
-        );
-
-        uint160 sqrtMarkTwapX96 = exchange.getSqrtMarkTwapX96(
-            address(baseToken),
-            config.getTwapInterval()
-        );
-        uint256 markPriceX96 = PerpMath.formatSqrtPriceX96ToPriceX96(
-            sqrtMarkTwapX96
-        );
-        uint256 markPrice = PerpMath.formatX96ToX10_18(markPriceX96);
-        return markPrice;
-    }
-
-    function getBaseTokenMarkTwapTick() public view returns (int24) {
-        IExchange exchange = IExchange(perpVault.getExchange());
-        IClearingHouseConfig config = IClearingHouseConfig(
-            perpVault.getClearingHouseConfig()
-        );
-
-        uint160 sqrtMarkTwapX96 = exchange.getSqrtMarkTwapX96(
-            address(baseToken),
-            config.getTwapInterval()
-        );
-        uint256 markPriceX96 = PerpMath.formatSqrtPriceX96ToPriceX96(
-            sqrtMarkTwapX96
-        );
-        return TickMath.getTickAtSqrtRatio(sqrtMarkTwapX96);
-    }
-
-    /**
-     * @notice
-     *  Assumes all balance is in Lend outside of a small amount of debt and short. Deploys
-     *  capital maintaining the collatRatioTarget
-     *
-     * @dev
-     *  Some crafty maths here:
-     *  B: borrow amount in short (Not total debt!)
-     *  L: Lend in want
-     *  Cr: Collateral Target
-     *  Po: Oracle price (short * Po = want)
-     *  Plp: LP Price
-     *  Di: Initial Debt in short
-     *  Si: Initial short balance
-     *
-     *  We want:
-     *  Cr = BPo / L
-     *  T = L + Plp(B + 2Si - Di)
-     *
-     *  Solving this for L finds:
-     *  B = (TCr - Cr*Plp(2Si-Di)) / (Po + Cr*Plp)
-     */
-    function _calcDeployment(uint256 _amount)
-        internal
-        returns (uint256 _lendNeeded, uint256 _borrowAmt)
-    {
-        // uint256 oPrice = getOraclePrice();
-        // uint256 lpPrice = getLpPrice();
-        // uint256 Si2 = balanceShort().mul(2);
-        // uint256 Di = balanceDebtInShort();
-        // uint256 CrPlp = collatTarget.mul(lpPrice);
-        // uint256 numerator;
-        // // NOTE: may throw if _amount * CrPlp > 1e70
-        // if (Di > Si2) {
-        //     numerator = (
-        //         collatTarget.mul(_amount).mul(1e18).add(CrPlp.mul(Di.sub(Si2)))
-        //     )
-        //         .sub(oPrice.mul(BASIS_PRECISION).mul(Di));
-        // } else {
-        //     numerator = (
-        //         collatTarget.mul(_amount).mul(1e18).sub(CrPlp.mul(Si2.sub(Di)))
-        //     )
-        //         .sub(oPrice.mul(BASIS_PRECISION).mul(Di));
-        // }
-        // _borrow = numerator.div(
-        //     BASIS_PRECISION.mul(oPrice.add(CrPlp.div(BASIS_PRECISION)))
-        // );
-        // _lendNeeded = _amount.sub(
-        //     (_borrow.add(Si2).sub(Di)).mul(lpPrice).div(1e18)
-        // );
-    }
-
-    function _deployFromLend(uint256 _amount) internal {
-        // (uint256 _lendNeeded, uint256 _borrowAmt) = _calcDeployment(_amount);
-        // _redeemWant(balanceLend().sub(_lendNeeded));
-        // _borrow(_borrowAmt);
-        // _addToLP(balanceShort());
-        if (totalLiquidity > 0) {
-            liquidateAllToLend();
-        }
-        _determineTicks();
-        _addLiquidityToShortMarket(_amount);
-    }
-
-    function _rebalanceDebtInternal() internal {
-        uint256 swapAmountWant;
-        uint256 slippage;
-        uint256 debtRatio = calcDebtRatio();
-        // Liquidate all the lend, leaving none in debt or as short
-        if (totalLiquidity > 0) {
-            liquidateAllToLend();
-        }
-        _deployFromLend(estimatedTotalAssets());
-        emit DebtRebalance(debtRatio, swapAmountWant, slippage);
+    function exec(address _target, bytes memory _data) external onlyAuthorized {
+        PerpLib.exec(_target, _data);
     }
 
     function liquidateAllToLend()
-        public
+        internal
         returns (IClearingHouse.RemoveLiquidityResponse memory _resp)
     {
-        require(totalLiquidity > 0, "RL_TLLZ");
+        require(totalLiquidity() > 0, "RL_LIQ");
         _collectPendingFees();
         IClearingHouse.RemoveLiquidityParams memory params = IClearingHouse
             .RemoveLiquidityParams({
                 baseToken: address(short),
                 lowerTick: lowerTick,
                 upperTick: upperTick,
-                liquidity: uint128(totalLiquidity),
+                liquidity: uint128(totalLiquidity()),
                 minBase: 0,
                 minQuote: 0,
                 deadline: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
             });
         _resp = clearingHouse.removeLiquidity(params);
-        // emit Debug(_resp.base, 104);
-        // emit Debug(_resp.quote, 105);
-        // emit Debug(_resp.fee, 106);
-        // emit Debug(uint24(upperTick), 200);
-        // emit Debug(uint24(lowerTick), 201);
-        totalLiquidity = totalLiquidity.sub(totalLiquidity);
         //_closePosition(); //TODO: Bring back later
-    }
-
-    /**
-     * Withdraws and removes `_deployedPercent` percentage if LP from farming and pool respectively
-     *
-     * @param _deployedPercent percentage multiplied by BASIS_PRECISION of LP to remove.
-     */
-    function _removeLpPercent(uint256 _deployedPercent) internal {
-        // uint256 lpPooled = countLpPooled();
-        // uint256 lpUnpooled = wantShortLP.balanceOf(address(this));
-        // uint256 lpCount = lpUnpooled.add(lpPooled);
-        // uint256 lpReq = lpCount.mul(_deployedPercent).div(BASIS_PRECISION);
-        // uint256 lpWithdraw;
-        // if (lpReq - lpUnpooled < lpPooled) {
-        //     lpWithdraw = lpReq.sub(lpUnpooled);
-        // } else {
-        //     lpWithdraw = lpPooled;
-        // }
-        // // Finnally withdraw the LP from farms and remove from pool
-        // _withdrawSomeLp(lpWithdraw);
-        // _removeAllLp();
-    }
-
-    function _getTotalDebt() public view returns (uint256) {
-        return vault.strategies(address(this)).totalDebt;
     }
 
     function liquidatePosition(uint256 _amountNeeded)
@@ -703,9 +407,127 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         } else {
             _loss = _amountNeeded.sub(_liquidatedAmount);
         }
-        emit Debug(_liquidatedAmount, 400);
-        emit Debug(_loss, 401);
-        emit Debug(newAmount, 402);
+    }
+
+    /// called by keeper to harvest rewards and either repay debt
+    uint256 constant DUST_LIQ = 100;
+    function _harvestInternal() internal returns (uint256 _wantHarvested) {
+        //TODO PERP how does the farming work? Do we need to harvest and auto-compound? Is it all automatic?
+        if (totalLiquidity() < DUST_LIQ) {
+            return 0;
+        }
+        IClearingHouse.RemoveLiquidityResponse
+            memory response = _collectPendingFees();
+        return response.fee;
+    }
+
+    // deploy assets according to vault strategy
+    function _deploy(uint256 _amount) internal {
+        // TODO: Add check for collateral cap here
+        if (_amount < minDeploy) {
+            return;
+        }
+
+        //Deposit into perp
+        _addCollateral(_amount);
+        uint256 leverageAmount = _amount.mul(debtMultiple).div(BASIS_PRECISION);
+        _deployFromLend(leverageAmount);
+        //TODO PERP: make sure that we have USDC for fees
+    }
+
+    function _determineTicks() internal {
+        IUniswapV3Pool pool = IUniswapV3Pool(
+            marketRegistery.getPool(address(short))
+        );
+
+        (lowerTick, upperTick) = PerpLib.determineTicks(
+            pool,
+            twapTime,
+            tickRangeMultiplier
+        );
+    }
+
+    function _addLiquidityToShortMarket(uint256 _amount)
+        internal
+        returns (IClearingHouse.AddLiquidityResponse memory _resp)
+    {
+        uint256 amountInSTD = _amount.mul(uint256(10)**(18 - wantDecimals));
+        uint256 twapMarkPrice = getBaseTokenMarkTwapPrice();
+        uint256 amountShortNeeded = amountInSTD
+            .mul(STD_PRECISION)
+            .div(twapMarkPrice)
+            .div(uint256(2));
+        IClearingHouse.AddLiquidityParams memory params = IClearingHouse
+            .AddLiquidityParams({
+                baseToken: address(short),
+                base: amountShortNeeded,
+                quote: amountInSTD.div(2),
+                lowerTick: lowerTick,
+                upperTick: upperTick,
+                minBase: amountShortNeeded.mul(slippageAdj).div(BASIS_PRECISION),
+                minQuote: (amountInSTD.div(2)).mul(slippageAdj).div(BASIS_PRECISION),
+                useTakerBalance: bool(false),
+                deadline: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+            });
+        _resp = clearingHouse.addLiquidity(params);
+    }
+
+    function _removeCollateral(uint256 _amount) internal {
+        // Withdraw from perp
+        perpVault.withdraw(address(want), _amount);
+    }
+
+    function _addCollateral(uint256 _amount) internal {
+        // Deposit into perp
+        perpVault.deposit(address(want), _amount);
+    }
+
+    function _collectPendingFees()
+        internal
+        returns (IClearingHouse.RemoveLiquidityResponse memory _resp)
+    {
+        IClearingHouse.RemoveLiquidityParams memory params = IClearingHouse
+            .RemoveLiquidityParams({
+                baseToken: address(short),
+                lowerTick: lowerTick,
+                upperTick: upperTick,
+                liquidity: 0,
+                minBase: 0,
+                minQuote: 0,
+                deadline: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+            });
+        _resp = clearingHouse.removeLiquidity(params);
+    }
+
+    function _closePosition() internal returns (uint256 _base, uint256 _quote) {
+        IClearingHouse.ClosePositionParams memory params = IClearingHouse
+            .ClosePositionParams({
+                baseToken: address(short),
+                sqrtPriceLimitX96: 0,
+                oppositeAmountBound: 0,
+                deadline: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff,
+                referralCode: bytes32(bytes("ROBO"))
+            });
+        (_base, _quote) = clearingHouse.closePosition(params);
+    }
+
+    function _deployFromLend(uint256 _amount) internal {
+        if (totalLiquidity() > 0) {
+            liquidateAllToLend();
+        }
+        _determineTicks();
+        _addLiquidityToShortMarket(_amount);
+    }
+
+    function _rebalanceDebtInternal() internal {
+        uint256 debtRatio = calcDebtRatio();
+        emit DebtRebalance(debtRatio, balanceDeployed(), 0);
+        // Liquidate all the lend, leaving none in debt or as short
+        if (totalLiquidity() > 0) {
+            liquidateAllToLend();
+        }
+        _deployFromLend(estimatedTotalAssets());
+        
     }
 
     /**
@@ -718,435 +540,33 @@ abstract contract CoreStrategyPerp is BaseStrategy {
      * @param _amountNeeded `want` amount to liquidate
      */
     function _withdraw(uint256 _amountNeeded)
-        public
+        internal
         returns (uint256 _liquidatedAmount, uint256 _loss)
     {
         uint256 balanceWant = balanceOfWant();
         if (_amountNeeded <= balanceWant) {
-            emit Debug(_amountNeeded, 500);
             return (_amountNeeded, 0);
         }
         liquidateAllToLend();
         _removeCollateral(_amountNeeded);
         if (_getTotalDebt() > _amountNeeded) {
             _addLiquidityToShortMarket(_getTotalDebt().sub(_amountNeeded));
-            emit Debug(_getTotalDebt().sub(_amountNeeded), 503);
         }
-        emit Debug(_amountNeeded, 501);
-        emit Debug(balanceOfWant(), 502);
+
         return (_amountNeeded, 0);
-
-        // uint256 balanceDeployed = balanceDeployed();
-        // // stratPercent: Percentage of the deployed capital we want to liquidate.
-        // uint256 stratPercent =
-        //     _amountNeeded.sub(balanceWant).mul(BASIS_PRECISION).div(
-        //         balanceDeployed
-        //     );
-        // if (stratPercent > 9500) {
-        //     // If this happened, we just undeploy the lot
-        //     // and it'll be redeployed during the next harvest.
-        //     (, _loss) = liquidateAllPositionsInternal();
-        //     _liquidatedAmount = balanceOfWant().sub(balanceWant);
-        // } else {
-        //     // liquidate all to lend
-        //     liquidateAllToLend();
-        //     // Only rebalance if more than 5% is being liquidated
-        //     // to save on gas
-        //     uint256 slippage = 0;
-        //     if (stratPercent > 500) {
-        //         // swap to ensure the debt ratio isn't negatively affected
-        //         uint256 shortInShort = balanceShort();
-        //         uint256 debtInShort = balanceDebtInShort();
-        //         if (debtInShort > shortInShort) {
-        //             uint256 debt =
-        //                 convertShortToWantLP(debtInShort.sub(shortInShort));
-        //             uint256 swapAmountWant =
-        //                 debt.mul(stratPercent).div(BASIS_PRECISION);
-        //             _redeemWant(swapAmountWant);
-        //             slippage = _swapExactWantShort(swapAmountWant);
-        //         } else {
-        //             (, slippage) = _swapExactShortWant(
-        //                 (shortInShort.sub(debtInShort)).mul(stratPercent).div(
-        //                     BASIS_PRECISION
-        //                 )
-        //             );
-        //         }
-        //     }
-        //     _repayDebt();
-        //     // Redeploy the strat
-        //     _deployFromLend(balanceDeployed.sub(_amountNeeded).add(slippage));
-        //     _liquidatedAmount = balanceOfWant().sub(balanceWant);
-        //     _loss = slippage;
-        // }
     }
 
-    /**
-     * This method is often farm specific so it needs to be declared elsewhere.
-     */
-    // function _farmPendingRewards(uint256 _pid, address _user)
-    //     internal
-    //     view
-    //     virtual
-    //     returns (uint256);
-
-    // // calculate total value of vault assets
-    function estimatedTotalAssets() public view override returns (uint256) {
-        return balanceOfWant().add(balanceDeployed());
+     function ethToWant(uint256 _amtInWei)
+        public
+        view
+        virtual
+        override
+        returns (uint256)
+    {
+        // This is not currently used by the strategies and is
+        // being removed to reduce the size of the contract
+        return 0;
     }
-
-    // calculate total value of vault assets
-    function balanceDeployed() public view returns (uint256) {
-        return uint256(perpVault.getAccountValue(address(this)));
-        //     balanceLend().add(balanceLp()).add(balanceShortWantEq()).sub(
-        //         balanceDebt()
-        //     );
-        //return 0;
-    }
-
-    // debt ratio - used to trigger rebalancing of debt
-    function calcDebtRatio() public view returns (uint256) {
-        uint256 shortAmount = orderBook.getTotalOrderDebt(
-            address(this),
-            address(short),
-            true
-        );
-        uint256 longAmount = orderBook.getTotalOrderDebt(
-            address(this),
-            address(short),
-            false
-        );
-        shortAmount = shortAmount.mul(getBaseTokenMarkTwapPrice()).div(
-            uint256(10)**uint256(18)
-        );
-        //uint256 ratio = _getTotalDebt().mul(uint256(10) ** uint256(18).sub(wantDecimals) ).mul(BASIS_PRECISION).div(shortAmount.add(longAmount));
-        uint256 ratio = _getTotalDebt()
-            .div(2)
-            .mul(uint256(10)**uint256(18).sub(wantDecimals))
-            .mul(BASIS_PRECISION)
-            .div(shortAmount);
-        return ratio;
-        //return //(balanceDebt().mul(BASIS_PRECISION).mul(2).div(balanceLp()));
-    }
-
-    // calculate debt / collateral - used to trigger rebalancing of debt & collateral
-    function calcCollateral() public view returns (uint256) {
-        return
-            perpVault.getFreeCollateral(address(this)).mul(BASIS_PRECISION).div(
-                _getTotalDebt()
-            );
-        // return balanceDebtOracle().mul(BASIS_PRECISION).div(balanceLend());
-    }
-
-    // function getLpReserves()
-    //     public
-    //     view
-    //     returns (uint256 _wantInLp, uint256 _shortInLp)
-    // {
-    //     // (uint112 reserves0, uint112 reserves1, ) = wantShortLP.getReserves();
-    //     // if (wantShortLP.token0() == address(want)) {
-    //     //     _wantInLp = uint256(reserves0);
-    //     //     _shortInLp = uint256(reserves1);
-    //     // } else {
-    //     //     _wantInLp = uint256(reserves1);
-    //     //     _shortInLp = uint256(reserves0);
-    //     // }
-    // }
-
-    // function convertShortToWantLP(uint256 _amountShort)
-    //     internal
-    //     view
-    //     returns (uint256)
-    // {
-    //     // (uint256 wantInLp, uint256 shortInLp) = getLpReserves();
-    //     // return (_amountShort.mul(wantInLp).div(shortInLp));
-    // }
-
-    // function convertShortToWantOracle(uint256 _amountShort)
-    //     internal
-    //     view
-    //     returns (uint256)
-    // {
-    //     // return _amountShort.mul(getOraclePrice()).div(1e18);
-    // }
-
-    // function convertWantToShortLP(uint256 _amountWant)
-    //     internal
-    //     view
-    //     returns (uint256)
-    // {
-    //     (uint256 wantInLp, uint256 shortInLp) = getLpReserves();
-    //     return _amountWant.mul(shortInLp).div(wantInLp);
-    // }
-
-    // function balanceLpInShort() public view returns (uint256) {
-    //     //return countLpPooled().add(wantShortLP.balanceOf(address(this)));
-    // }
-
-    // /// get value of all LP in want currency
-    // function balanceLp() public view returns (uint256) {
-    //     // (uint256 wantInLp, ) = getLpReserves();
-    //     // return
-    //     //     balanceLpInShort().mul(wantInLp).mul(2).div(
-    //     //         wantShortLP.totalSupply()
-    //     //     );
-    // }
-
-    // // value of borrowed tokens in value of want tokens
-    // function balanceDebtInShort() public view returns (uint256) {
-    //     //TODO PERP
-    //     // return debtToken.balanceOf(address(this));
-    // }
-
-    // // value of borrowed tokens in value of want tokens
-    // // Uses current exchange price, not stored
-    // function balanceDebtInShortCurrent() internal returns (uint256) {
-    //     //TODO PERP
-    //     //return debtToken.balanceOf(address(this));
-    // }
-
-    // // value of borrowed tokens in value of want tokens
-    // function balanceDebt() public view returns (uint256) {
-    //     //TODO PERP
-    //     //return convertShortToWantLP(balanceDebtInShort());
-    // }
-
-    // //TODO PERP
-    // function balanceDebtOracle() public view returns (uint256) {
-    //     return convertShortToWantOracle(balanceDebtInShort());
-    // }
-
-    //TODO PERP
-    function balancePendingHarvest() public view virtual returns (uint256);
-
-    // reserves
-    function balanceOfWant() public view returns (uint256) {
-        return (want.balanceOf(address(this)));
-    }
-
-    // function balanceShort() public view returns (uint256) {
-    //     //TODO PERP is it really needed?
-    // }
-
-    // function balanceShortWantEq() public view returns (uint256) {
-    //     //TODO PERP is it really needed?
-    // }
-
-    // function balanceLend() public view returns (uint256) {
-    //     //TODO PERP
-    // }
-
-    // // Strategy specific
-    // function countLpPooled() internal view virtual returns (uint256);
-
-    // // lend want tokens to lending platform
-    // function _lendWant(uint256 amount) internal {
-    //     //TODO PERP DEPOSIT
-    // }
-
-    //TODO PERP REWARDS
-    // function _getHarvestInHarvestLp() internal view returns (uint256) {
-    //     uint256 harvest_lp = farmToken.balanceOf(address(farmTokenLP));
-    //     return harvest_lp;
-    // }
-
-    // function _getShortInHarvestLp() internal view returns (uint256) {
-    //     uint256 shortToken_lp = short.balanceOf(address(farmTokenLP));
-    //     return shortToken_lp;
-    // }
-
-    // function _redeemWant(uint256 _redeem_amount) internal {
-    //     pool.withdraw(address(want), _redeem_amount, address(this));
-    // }
-
-    // // withdraws some LP worth _amount, converts all withdrawn LP to short token to repay debt
-    // function _withdrawLpRebalance(uint256 _amount)
-    //     internal
-    //     returns (uint256 swapAmountWant, uint256 slippageWant)
-    // {
-    //     uint256 lpUnpooled = wantShortLP.balanceOf(address(this));
-    //     uint256 lpPooled = countLpPooled();
-    //     uint256 lpCount = lpUnpooled.add(lpPooled);
-    //     uint256 lpReq = _amount.mul(lpCount).div(balanceLp());
-    //     uint256 lpWithdraw;
-    //     if (lpReq - lpUnpooled < lpPooled) {
-    //         lpWithdraw = lpReq - lpUnpooled;
-    //     } else {
-    //         lpWithdraw = lpPooled;
-    //     }
-    //     _withdrawSomeLp(lpWithdraw);
-    //     _removeAllLp();
-    //     swapAmountWant = Math.min(
-    //         _amount.div(2),
-    //         want.balanceOf(address(this))
-    //     );
-    //     slippageWant = _swapExactWantShort(swapAmountWant);
-
-    //     _repayDebt();
-    // }
-
-    // //  withdraws some LP worth _amount, uses withdrawn LP to add to collateral & repay debt
-    // function _withdrawLpRebalanceCollateral(uint256 _amount) internal {
-    //     uint256 lpUnpooled = wantShortLP.balanceOf(address(this));
-    //     uint256 lpPooled = countLpPooled();
-    //     uint256 lpCount = lpUnpooled.add(lpPooled);
-    //     uint256 lpReq = _amount.mul(lpCount).div(balanceLp());
-    //     uint256 lpWithdraw;
-    //     if (lpReq - lpUnpooled < lpPooled) {
-    //         lpWithdraw = lpReq - lpUnpooled;
-    //     } else {
-    //         lpWithdraw = lpPooled;
-    //     }
-    //     _withdrawSomeLp(lpWithdraw);
-    //     _removeAllLp();
-    //     uint256 wantBal = balanceOfWant();
-    //     if (_amount.div(2) <= wantBal) {
-    //         _lendWant(_amount.div(2));
-    //     } else {
-    //         _lendWant(wantBal);
-    //     }
-    //     _repayDebt();
-    // }
-
-    // function _addToLP(uint256 _amountShort) internal {
-    //     uint256 _amountWant = convertShortToWantLP(_amountShort);
-
-    //     uint256 balWant = want.balanceOf(address(this));
-    //     if (balWant < _amountWant) {
-    //         _amountWant = balWant;
-    //     }
-
-    //     router.addLiquidity(
-    //         address(short),
-    //         address(want),
-    //         _amountShort,
-    //         _amountWant,
-    //         _amountShort.mul(slippageAdj).div(BASIS_PRECISION),
-    //         _amountWant.mul(slippageAdj).div(BASIS_PRECISION),
-    //         address(this),
-    //         now
-    //     );
-    // }
-
-    // Farm-specific methods
-
-    // function _withdrawFarm(uint256 _amount) internal virtual;
-
-    // function _withdrawSomeLp(uint256 _amount) internal {
-    //     require(_amount <= countLpPooled());
-    //     _withdrawFarm(_amount);
-    // }
-
-    // function _withdrawAllPooled() internal {
-    //     uint256 lpPooled = countLpPooled();
-    //     _withdrawFarm(lpPooled);
-    // }
-
-    // // all LP currently not in Farm is removed.
-    // function _removeAllLp() internal {
-    //     uint256 _amount = wantShortLP.balanceOf(address(this));
-    //     (uint256 wantLP, uint256 shortLP) = getLpReserves();
-
-    //     uint256 lpIssued = wantShortLP.totalSupply();
-
-    //     uint256 amountAMin =
-    //         _amount.mul(shortLP).mul(slippageAdj).div(BASIS_PRECISION).div(
-    //             lpIssued
-    //         );
-    //     uint256 amountBMin =
-    //         _amount.mul(wantLP).mul(slippageAdj).div(BASIS_PRECISION).div(
-    //             lpIssued
-    //         );
-    //     router.removeLiquidity(
-    //         address(short),
-    //         address(want),
-    //         _amount,
-    //         amountAMin,
-    //         amountBMin,
-    //         address(this),
-    //         now
-    //     );
-    // }
-
-    // function _sellHarvestWant() internal virtual {
-    //     uint256 harvestBalance = farmToken.balanceOf(address(this));
-    //     if (harvestBalance == 0) return;
-    //     router.swapExactTokensForTokens(
-    //         harvestBalance,
-    //         0,
-    //         getTokenOutPath(address(farmToken), address(want)),
-    //         address(this),
-    //         now
-    //     );
-    // }
-
-    // /**
-    //  * @notice
-    //  *  Swaps _amount of want for short
-    //  *
-    //  * @param _amount The amount of want to swap
-    //  *
-    //  * @return slippageWant Returns the cost of fees + slippage in want
-    //  */
-    // function _swapExactWantShort(uint256 _amount)
-    //     internal
-    //     returns (uint256 slippageWant)
-    // {
-    //     uint256 amountOutMin = convertWantToShortLP(_amount);
-    //     uint256[] memory amounts =
-    //         router.swapExactTokensForTokens(
-    //             _amount,
-    //             amountOutMin.mul(slippageAdj).div(BASIS_PRECISION),
-    //             getTokenOutPath(address(want), address(short)), // _pathWantToShort(),
-    //             address(this),
-    //             now
-    //         );
-    //     slippageWant = convertShortToWantLP(
-    //         amountOutMin.sub(amounts[amounts.length - 1])
-    //     );
-    // }
-
-    // /**
-    //  * @notice
-    //  *  Swaps _amount of short for want
-    //  *
-    //  * @param _amountShort The amount of short to swap
-    //  *
-    //  * @return _amountWant Returns the want amount minus fees
-    //  * @return _slippageWant Returns the cost of fees + slippage in want
-    //  */
-    // function _swapExactShortWant(uint256 _amountShort)
-    //     internal
-    //     returns (uint256 _amountWant, uint256 _slippageWant)
-    // {
-    //     _amountWant = convertShortToWantLP(_amountShort);
-    //     uint256[] memory amounts =
-    //         router.swapExactTokensForTokens(
-    //             _amountShort,
-    //             _amountWant.mul(slippageAdj).div(BASIS_PRECISION),
-    //             getTokenOutPath(address(short), address(want)),
-    //             address(this),
-    //             now
-    //         );
-    //     _slippageWant = _amountWant.sub(amounts[amounts.length - 1]);
-    // }
-
-    // function _swapWantShortExact(uint256 _amountOut)
-    //     internal
-    //     returns (uint256 _slippageWant)
-    // {
-    //     uint256 amountInWant = convertShortToWantLP(_amountOut);
-    //     uint256 amountInMax =
-    //         (amountInWant.mul(BASIS_PRECISION).div(slippageAdj)).add(10); // add 1 to make up for rounding down
-    //     uint256[] memory amounts =
-    //         router.swapTokensForExactTokens(
-    //             _amountOut,
-    //             amountInMax,
-    //             getTokenOutPath(address(want), address(short)),
-    //             address(this),
-    //             now
-    //         );
-    //     _slippageWant = amounts[0].sub(amountInWant);
-    // }
 
     /**
      * @notice

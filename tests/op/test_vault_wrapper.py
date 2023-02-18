@@ -4,7 +4,7 @@ import pytest
 
 
 def test_operation(
-    chain, accounts, gov, token, vault, strategy, user, strategist, amount, RELATIVE_APPROX, conf, whale
+    chain, accounts, gov, token, vault, strategy, user, strategist, amount, RELATIVE_APPROX, conf, whale, keeper
 ):
     # Deposit to the vault
     user_balance_before = token.balanceOf(user)
@@ -19,7 +19,6 @@ def test_operation(
     strategy.harvest()
     strat = strategy
     assert pytest.approx(strategy.estimatedTotalAssets(), rel=RELATIVE_APPROX) == amount
-    assert 1==2
     # # make tiny swap to avoid issue where dif
     # swapPct = 1 / 1000
     # offSetDebtRatioHigh(strategy, lp_token, token, Contract, swapPct, router, whale) 
@@ -28,10 +27,10 @@ def test_operation(
     # collatRatio = strategy.calcCollateral()
     print('debtRatio:   {0}'.format(debtRatio))
     # print('collatRatio: {0}'.format(collatRatio))
-    assert pytest.approx(10000, rel=1e-2) == debtRatio #rel=1e-3
+    assert pytest.approx((10000*10000)/strategy.debtMultiple(), rel=1e-2) == debtRatio #rel=1e-3
     # assert pytest.approx(6000, rel=1e-2) == collatRatio
     # This part should have been done by harvest... weird that lowerTick and upperTick arent set at this point
-    strategy._determineTicks() 
+    # strategy._determineTicks({'from': keeper});
 
     # withdrawal
     vault.withdraw(amount, user, 500, {'from' : user}) 
