@@ -25,7 +25,6 @@ import "./lib/PerpLib.sol";
 struct CoreStrategyPerpConfig {
     address want;
     address short;
-    address router;
     uint256 minDeploy;
     uint256 minProfit;
     // PERP
@@ -231,6 +230,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
 
     function setInsurance(address _insurance) external onlyAuthorized {
         require(address(insurance) == address(0));
+        require(address(_insurance) != address(0));
         insurance = IStrategyInsurance(_insurance);
     }
 
@@ -430,8 +430,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
 
         //Deposit into perp
         _addCollateral(_amount);
-        uint256 leverageAmount = _amount.mul(debtMultiple).div(BASIS_PRECISION);
-        _deployFromLend(leverageAmount);
+        _deployFromLend(_amount);
         //TODO PERP: make sure that we have USDC for fees
     }
 
@@ -516,7 +515,8 @@ abstract contract CoreStrategyPerp is BaseStrategy {
             liquidateAllToLend();
         }
         _determineTicks();
-        _addLiquidityToShortMarket(_amount);
+        uint256 leverageAmount = _amount.mul(debtMultiple).div(BASIS_PRECISION);
+        _addLiquidityToShortMarket(leverageAmount);
     }
 
     function _rebalanceDebtInternal() internal {
