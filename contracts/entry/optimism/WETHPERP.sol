@@ -20,7 +20,8 @@ contract WETHPERP is CoreStrategyPerp {
                 0xd5820eE0F55205f6cdE8BB0647072143b3060067, // Perp MarketRegistery
                 0x8C835DFaA34e2AE61775e80EE29E2c724c6AE2BB, // vETH
                 200, // Tick Range Multiplier
-                0 // Twap Time
+                0, // Twap Time
+                10000 // Debt Multiple (Leverage)
             )
         )
     {}

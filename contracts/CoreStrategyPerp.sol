@@ -34,6 +34,7 @@ struct CoreStrategyPerpConfig {
     address baseToken;
     int24 tickRangeMultiplier;
     uint24 twapTime;
+    uint256 debtMultiple;
 }
 
 interface IERC20Extended is IERC20 {
@@ -58,10 +59,12 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     );
     event Debug(uint256 indexed debug1, uint256 indexed debug2);
 
-    uint256 public debtUpper = 5100;
-    uint256 public debtMultiple = 20000;
-    uint256 public debtLower = 4900;
-    uint256 public rebalancePercent = 10000; // 100% (how far does rebalance of debt move towards 100% from threshold)
+    uint256 public collatUpper = 5100;
+    uint256 public collatLower = 4900;
+    uint256 public debtUpper = 10100;
+    uint256 public debtMultiple = 10000;
+    uint256 public debtLower = 9900;
+    //uint256 public rebalancePercent = 10000; // 100% (how far does rebalance of debt move towards 100% from threshold)
 
     // protocal limits & upper, target and lower thresholds for ratio of debt to collateral
     uint256 public collatLimit = 7500;
@@ -114,6 +117,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         baseToken = IBaseToken(_config.baseToken);
         tickRangeMultiplier = _config.tickRangeMultiplier;
         twapTime = _config.twapTime;
+        debtMultiple = _config.debtMultiple;
 
         approveContracts();
     }
@@ -129,7 +133,12 @@ abstract contract CoreStrategyPerp is BaseStrategy {
 
     // Total liquidity in AMM
     function totalLiquidity() public view returns (uint256 _liquidity) {
-        OpenOrder.Info memory info = orderBook.getOpenOrder(address(this), address(short), lowerTick, upperTick);
+        OpenOrder.Info memory info = orderBook.getOpenOrder(
+            address(this),
+            address(short),
+            lowerTick,
+            upperTick
+        );
         return uint256(info.liquidity);
     }
 
@@ -149,8 +158,8 @@ abstract contract CoreStrategyPerp is BaseStrategy {
 
         return PerpMath.formatX96ToX10_18(markPriceX96);
     }
-    
-    // Get short Mark Price (used for lending market) which is derived from Uniswap TWAP 
+
+    // Get short Mark Price (used for lending market) which is derived from Uniswap TWAP
     function getBaseTokenMarkTwapTick() public view returns (int24) {
         IExchange exchange = IExchange(perpVault.getExchange());
         IClearingHouseConfig config = IClearingHouseConfig(
@@ -184,16 +193,17 @@ abstract contract CoreStrategyPerp is BaseStrategy {
             address(short),
             true
         );
-        uint256 longAmount = orderBook.getTotalOrderDebt(
-            address(this),
-            address(short),
-            false
-        );
+        // uint256 longAmount = orderBook.getTotalOrderDebt(
+        //     address(this),
+        //     address(short),
+        //     false
+        // );
         shortAmount = shortAmount.mul(getBaseTokenMarkTwapPrice()).div(
             uint256(10)**uint256(18)
         );
         uint256 ratio = _getTotalDebt()
-            .div(2)
+            .mul(debtMultiple)
+            .div(uint256(20000))
             .mul(uint256(10)**uint256(18).sub(wantDecimals))
             .mul(BASIS_PRECISION)
             .div(shortAmount);
@@ -210,21 +220,20 @@ abstract contract CoreStrategyPerp is BaseStrategy {
 
     // View pending fees (not optimism) in USD terms
     function pendingRewards() public view returns (uint256) {
-        return orderBook.getPendingFee(
-            address(this),
-            address(short),
-            lowerTick,
-            upperTick
-        );
+        return
+            orderBook.getPendingFee(
+                address(this),
+                address(short),
+                lowerTick,
+                upperTick
+            );
     }
 
     function _getTotalDebt() internal view returns (uint256) {
         return vault.strategies(address(this)).totalDebt;
     }
 
-    function setSlippageConfig(
-        uint256 _slippageAdj
-    ) external onlyAuthorized {
+    function setSlippageConfig(uint256 _slippageAdj) external onlyAuthorized {
         slippageAdj = _slippageAdj;
     }
 
@@ -238,18 +247,39 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         perpVault = IVault(_vault);
     }
 
-    function setDebtThresholds(
-        uint256 _lower,
-        uint256 _upper,
-        uint256 _debtMultiple
-    ) external onlyAuthorized {
+    /**
+     * function to set debt thresholds before rebalancing
+     *
+     * @param _lower lower debt ratio
+     * @param _upper upper debt ratio
+     */
+
+    function setDebtThresholds(uint256 _lower, uint256 _upper)
+        external
+        onlyAuthorized
+    {
         require(_lower <= BASIS_PRECISION);
         require(_lower < _upper);
-        require(_debtMultiple <= BASIS_PRECISION.mul(10));
+        //require(_debtMultiple <= BASIS_PRECISION.mul(10));
         require(_lower < _upper);
         debtUpper = _upper;
         debtLower = _lower;
+        //debtMultiple = _debtMultiple;
+    }
+
+    function setCollateralThresholds(
+        uint256 _lower,
+        uint256 _debtMultiple,
+        uint256 _upper,
+        uint256 _limit
+    ) external onlyAuthorized {
+        require(_limit <= BASIS_PRECISION);
+        collatLimit = _limit;
+        require(collatLimit > _upper);
+        require(_upper > _lower);
+        collatUpper = _upper;
         debtMultiple = _debtMultiple;
+        collatLower = _lower;
     }
 
     function prepareReturn(uint256 _debtOutstanding)
@@ -278,7 +308,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
             _debtPayment = balanceOfWant();
             _loss = totalDebt.sub(totalAssets);
         }
-        
+
         if (pendingRewards() > minProfit) {
             _profit += _harvestInternal();
         }
@@ -321,7 +351,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     function approveContracts() internal {
         want.safeApprove(address(perpVault), type(uint256).max);
     }
-    
+
     function prepareMigration(address _newStrategy) internal override {
         liquidateAllPositions();
     }
@@ -343,15 +373,21 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     {
         liquidateAllToLend();
         _removeCollateral(perpVault.getFreeCollateral(address(this)));
+        return balanceOfWant();
     }
-    
 
     /// re-balances vault holding of short token vs LP to within target collateral range
     function rebalanceDebt() external onlyKeepers {
         uint256 debtRatio = calcDebtRatio();
         require(debtRatio < debtLower || debtRatio > debtUpper);
         _rebalanceDebtInternal();
-        
+    }
+
+    /// re-balances vault holding of short token vs LP to within target collateral range
+    function rebalanceCollateral() external onlyKeepers {
+        uint256 collatRatio = calcCollateral();
+        require(collatRatio < collatLower || collatRatio > collatUpper);
+        _rebalanceCollateralInternal();
     }
 
     function exec(address _target, bytes memory _data) external onlyAuthorized {
@@ -411,6 +447,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
 
     /// called by keeper to harvest rewards and either repay debt
     uint256 constant DUST_LIQ = 100;
+
     function _harvestInternal() internal returns (uint256 _wantHarvested) {
         //TODO PERP how does the farming work? Do we need to harvest and auto-compound? Is it all automatic?
         if (totalLiquidity() < DUST_LIQ) {
@@ -463,8 +500,12 @@ abstract contract CoreStrategyPerp is BaseStrategy {
                 quote: amountInSTD.div(2),
                 lowerTick: lowerTick,
                 upperTick: upperTick,
-                minBase: amountShortNeeded.mul(slippageAdj).div(BASIS_PRECISION),
-                minQuote: (amountInSTD.div(2)).mul(slippageAdj).div(BASIS_PRECISION),
+                minBase: amountShortNeeded.mul(slippageAdj).div(
+                    BASIS_PRECISION
+                ),
+                minQuote: (amountInSTD.div(2)).mul(slippageAdj).div(
+                    BASIS_PRECISION
+                ),
                 useTakerBalance: bool(false),
                 deadline: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
             });
@@ -527,7 +568,17 @@ abstract contract CoreStrategyPerp is BaseStrategy {
             liquidateAllToLend();
         }
         _deployFromLend(estimatedTotalAssets());
-        
+    }
+
+    function _rebalanceCollateralInternal() internal {
+        uint256 collatRatio = calcCollateral();
+
+        emit CollatRebalance(collatRatio, balanceDeployed());
+        // Liquidate all the lend, leaving none in debt or as short
+        if (totalLiquidity() > 0) {
+            liquidateAllToLend();
+        }
+        _deployFromLend(estimatedTotalAssets());
     }
 
     /**
@@ -556,7 +607,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         return (_amountNeeded, 0);
     }
 
-     function ethToWant(uint256 _amtInWei)
+    function ethToWant(uint256 _amtInWei)
         public
         view
         virtual
