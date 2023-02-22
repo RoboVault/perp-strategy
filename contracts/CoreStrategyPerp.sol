@@ -193,13 +193,16 @@ abstract contract CoreStrategyPerp is BaseStrategy {
             address(short),
             true
         );
+        if (shortAmount == 0) {
+            return 0;
+        }
         // uint256 longAmount = orderBook.getTotalOrderDebt(
         //     address(this),
         //     address(short),
         //     false
         // );
         shortAmount = shortAmount.mul(getBaseTokenMarkTwapPrice()).div(
-            uint256(10)**uint256(18)
+            (uint256(10)**uint256(18))
         );
         uint256 ratio = _getTotalDebt()
             .mul(debtMultiple)
@@ -353,7 +356,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     }
 
     function prepareMigration(address _newStrategy) internal override {
-        liquidateAllPositions();
+        liquidateAllPositionsInternal();
     }
 
     function migrateInsurance(address _newInsurance) external onlyGovernance {
@@ -371,9 +374,16 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         override
         returns (uint256 _amountFreed)
     {
+        (_amountFreed, ) = liquidateAllPositionsInternal();
+    }
+
+    function liquidateAllPositionsInternal()
+        internal
+        returns (uint256 _amountFreed, uint256 _loss)
+    {
         liquidateAllToLend();
         _removeCollateral(perpVault.getFreeCollateral(address(this)));
-        return balanceOfWant();
+        _amountFreed = balanceOfWant();
     }
 
     /// re-balances vault holding of short token vs LP to within target collateral range
@@ -595,16 +605,31 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         returns (uint256 _liquidatedAmount, uint256 _loss)
     {
         uint256 balanceWant = balanceOfWant();
+        uint256 deployed = balanceDeployed();
         if (_amountNeeded <= balanceWant) {
             return (_amountNeeded, 0);
         }
-        liquidateAllToLend();
-        _removeCollateral(_amountNeeded);
-        if (_getTotalDebt() > _amountNeeded) {
-            _addLiquidityToShortMarket(_getTotalDebt().sub(_amountNeeded));
+        // stratPercent: Percentage of the deployed capital we want to liquidate.
+        uint256 stratPercent = _amountNeeded
+            .sub(balanceWant)
+            .mul(BASIS_PRECISION)
+            .div(deployed);
+        if (stratPercent > 9500) {
+            // If this happened, we just undeploy the lot
+            // and it'll be redeployed during the next harvest.
+            (, _loss) = liquidateAllPositionsInternal();
+            _liquidatedAmount = balanceOfWant().sub(balanceWant);
+        } else {
+            liquidateAllToLend();
+            _amountNeeded = _amountNeeded.mul(stratPercent).div(
+                BASIS_PRECISION
+            );
+            _removeCollateral(_amountNeeded);
+            if (_getTotalDebt() > _amountNeeded) {
+                _addLiquidityToShortMarket(deployed.sub(_amountNeeded));
+            }
+            return (balanceOfWant().sub(balanceWant), 0);
         }
-
-        return (_amountNeeded, 0);
     }
 
     function ethToWant(uint256 _amtInWei)
