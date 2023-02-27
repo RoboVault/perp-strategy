@@ -122,6 +122,24 @@ def vault(pm, gov, rewards, guardian, management, token):
     yield vault
 
 @pytest.fixture
+def deployed_vault(chain, accounts, gov, token, vault, strategy, user, strategist, amount, RELATIVE_APPROX):
+    # Deposit to the vault
+    token.approve(vault.address, amount, {"from": user})
+    print("Amount: ", amount)
+    print("User: ", user)
+    vault.deposit(amount, {"from": user})
+    assert token.balanceOf(vault.address) == amount
+    
+    # harvest
+    chain.sleep(1)
+    
+    print("Vault: ",token.balanceOf(vault.address))
+    print("Strategy: ",token.balanceOf(strategy.address))
+    strategy.harvest()
+    assert pytest.approx(strategy.estimatedTotalAssets(), rel=RELATIVE_APPROX) == amount
+    yield vault 
+
+@pytest.fixture
 def perp_lib(gov, perplib_contract):
     lib = perplib_contract.deploy({'from': gov});
     yield lib
@@ -145,3 +163,9 @@ def strategy(vault, gov, user, strategist, keeper,  strategy_contract, perp_lib)
 @pytest.fixture(scope="session")
 def RELATIVE_APPROX():
     yield 1e-5
+
+# Function scoped isolation fixture to enable xdist.
+# Snapshots the chain before each test and reverts after test completion.
+@pytest.fixture(scope="function", autouse=True)
+def shared_setup(fn_isolation):
+    pass

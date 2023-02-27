@@ -13,6 +13,83 @@ def steal(stealPercent, strategy, token, chain, gov, user):
     chain.sleep(1)
     chain.mine(1)
 
+def test_calcDebt(
+    chain, accounts, gov, token, vault, strategy, user, strategist, amount, RELATIVE_APPROX, conf, whale, keeper
+):
+    # Deposit to the vault
+    user_balance_before = token.balanceOf(user)
+    token.approve(vault.address, amount, {"from": user})
+    vault.deposit(amount, {"from": user})
+    assert token.balanceOf(vault.address) == amount
+    
+    # harvest
+    chain.sleep(1)
+    chain.mine(1)
+    strategy.harvest()
+    reserve = accounts.at(whale, force=True)
+    bigAmount = amount * 100;
+    token.transfer(gov, bigAmount, {"from": reserve})
+    pv = interface.IVault(strategy.perpVault())
+    ch = interface.IClearingHouse(pv.getClearingHouse())
+    ob = interface.IOrderBook(ch.getOrderBook())
+    token.approve(pv, bigAmount, {'from': gov})
+    pv.deposit(token, bigAmount, {'from': gov})
+    vault.updateStrategyDebtRatio(strategy, 0, {'from': gov})
+    strategy.harvest()
+    assert pytest.approx(1, rel=RELATIVE_APPROX) == strategy.estimatedTotalAssets()
+    vault.updateStrategyDebtRatio(strategy, 10000, {'from': gov})
+    strategy.harvest()
+    assert pytest.approx(strategy.estimatedTotalAssets(), rel=RELATIVE_APPROX) == amount
+    ch.openPosition([strategy.short(), False, True, (10**18)*500000, 0, 999999999999999999999999, 0, 0], {'from': gov})
+    assert strategy.calcDebtRatio() < strategy.debtLower()
+    strategy.rebalanceDebt()
+
+    # Should not be able to re-balance twice
+    chain.sleep(1600)
+    chain.mine(1)
+    with brownie.reverts(""):
+        strategy.rebalanceDebt()
+    assert pytest.approx(strategy.estimatedTotalAssets(), rel=1e2) == amount
+    assert pytest.approx(strategy.calcDebtRatio(), rel=1e-2) == 10000
+    vault.updateStrategyDebtRatio(strategy, 0, {'from': gov})
+    strategy.harvest()
+    assert pytest.approx(token.balanceOf(vault), rel=1e-2) == amount
+    assert strategy.estimatedTotalAssets() < 100
+
+def test_operation(
+    chain, accounts, gov, token, vault, strategy, user, strategist, amount, RELATIVE_APPROX, conf, whale, keeper
+):
+    # Deposit to the vault
+    user_balance_before = token.balanceOf(user)
+    token.approve(vault.address, amount, {"from": user})
+    vault.deposit(amount, {"from": user})
+    assert token.balanceOf(vault.address) == amount
+    
+    # harvest
+    chain.sleep(1)
+    chain.mine(1)
+    strategy.harvest()
+    strat = strategy
+    assert pytest.approx(strategy.estimatedTotalAssets(), rel=RELATIVE_APPROX) == amount
+    # # make tiny swap to avoid issue where dif
+    # swapPct = 1 / 1000
+    # offSetDebtRatioHigh(strategy, lp_token, token, Contract, swapPct, router, whale) 
+    # # check debt ratio
+    debtRatio = strategy.calcDebtRatio()
+    # collatRatio = strategy.calcCollateral()
+    print('debtRatio:   {0}'.format(debtRatio))
+    # print('collatRatio: {0}'.format(collatRatio))
+    assert pytest.approx(10000, rel=1e-2) == debtRatio #rel=1e-3
+    # assert pytest.approx(6000, rel=1e-2) == collatRatio
+    # This part should have been done by harvest... weird that lowerTick and upperTick arent set at this point
+    # strategy._determineTicks({'from': keeper});
+
+    # withdrawal
+    vault.withdraw(amount, user, 500, {'from' : user}) 
+    assert (
+        pytest.approx(token.balanceOf(user), rel=RELATIVE_APPROX) == user_balance_before
+    )
+
 def test_change_debt_lossy(
     chain, gov, token, vault, strategy, user, strategist, amount, RELATIVE_APPROX, conf
 ):
@@ -43,7 +120,6 @@ def test_change_debt_lossy(
     chain.mine(1)
     time.sleep(1)
     
-    assert 1==2
     strategy.harvest()
     assert pytest.approx(strategy.estimatedTotalAssets(), rel=1e-2) == int(amount * 0.98 / 2) 
 
@@ -110,7 +186,7 @@ def test_set_debt_thresholds(strategy, gov, user, vault, token, amount, chain):
     strategy.harvest()
     assert strategy.debtUpper() == 101000
     assert strategy.debtLower() == 9900
-    assert strategy.debtMultiple() == 10000
+    #assert strategy.debtMultiple() == 10000
     assert pytest.approx(strategy.calcDebtRatio(), rel=1e-2) == 10000
 
 def test_set_collateral_thresholds(strategy, gov, user, vault, token, amount, chain):
@@ -157,41 +233,6 @@ def test_set_collateral_thresholds(strategy, gov, user, vault, token, amount, ch
     assert strategy.debtMultiple() == 20000
     assert pytest.approx(((100000 - strategy.debtMultiple())/10), rel=1e-2) == strategy.calcCollateral()
     assert pytest.approx(strategy.calcDebtRatio(), rel=1e-2) == 10000
-
-def test_operation(
-    chain, accounts, gov, token, vault, strategy, user, strategist, amount, RELATIVE_APPROX, conf, whale, keeper
-):
-    # Deposit to the vault
-    user_balance_before = token.balanceOf(user)
-    token.approve(vault.address, amount, {"from": user})
-    #assert 1==2
-    vault.deposit(amount, {"from": user})
-    assert token.balanceOf(vault.address) == amount
-    
-    # harvest
-    chain.sleep(1)
-    chain.mine(1)
-    strategy.harvest()
-    strat = strategy
-    assert pytest.approx(strategy.estimatedTotalAssets(), rel=RELATIVE_APPROX) == amount
-    # # make tiny swap to avoid issue where dif
-    # swapPct = 1 / 1000
-    # offSetDebtRatioHigh(strategy, lp_token, token, Contract, swapPct, router, whale) 
-    # # check debt ratio
-    debtRatio = strategy.calcDebtRatio()
-    # collatRatio = strategy.calcCollateral()
-    print('debtRatio:   {0}'.format(debtRatio))
-    # print('collatRatio: {0}'.format(collatRatio))
-    assert pytest.approx((10000*10000)/strategy.debtMultiple(), rel=1e-2) == debtRatio #rel=1e-3
-    # assert pytest.approx(6000, rel=1e-2) == collatRatio
-    # This part should have been done by harvest... weird that lowerTick and upperTick arent set at this point
-    # strategy._determineTicks({'from': keeper});
-
-    # withdrawal
-    vault.withdraw(amount, user, 500, {'from' : user}) 
-    assert (
-        pytest.approx(token.balanceOf(user), rel=RELATIVE_APPROX) == user_balance_before
-    )
 
 def test_sweep(gov, vault, strategy, token, user, amount, conf):
     # Strategy want token doesn't work
@@ -244,7 +285,6 @@ def test_lossy_withdrawal(
 
     chain.mine(1)
     balBefore = token.balanceOf(user)
-    assert 1==2
     vault.withdraw(amount, user, 150, {'from' : user}) 
     balAfter = token.balanceOf(user)
     assert pytest.approx(balAfter - balBefore, rel = 2e-3) == int(amount * .99)

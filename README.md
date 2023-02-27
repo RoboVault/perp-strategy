@@ -15,10 +15,10 @@
     <img src="images/robo-vault-logo.png" alt="Logo" width="240" height="240">
   </a>
 
-  <h3 align="center">##COMPANY_NAME ##PROJECT_NAME</h3>
+  <h3 align="center">RoboLabs Perp Vault</h3>
 
   <p align="center">
-    Contracts for ##COMPANY_NAME ##PROJECT_NAME repo
+    Contracts for RoboLabs Perp Vault repo
     <br />
     <a href="https://docs.robo-vault.com/referrals"><strong>Explore the docs »</strong></a>
     <br />
@@ -33,14 +33,14 @@
 
 
 <!-- ABOUT THE PROJECT -->
-## ##PROJECT_NAME Contracts
+## RoboLabs Perp Vault Contracts
 
-This repo contains the contracts for the ##COMPANY_NAME ##PROJECT_NAME
+This repo contains the contracts for the RoboLabs Perp Vault
 
 
 <!-- GETTING STARTED -->
 ## Getting Started
-
+Configure WETHPERP.sol to use the parameters you desire
 ### Install Dependencies 
 
 Requires npm and pip. See .github/workflows for suitable versions. 

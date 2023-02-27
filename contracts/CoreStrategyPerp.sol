@@ -20,6 +20,7 @@ import "./interfaces/perp/IMarketRegistry.sol";
 import "./lib/PerpMath.sol";
 import {IStrategyInsurance} from "./StrategyInsurance.sol";
 import "./lib/PerpLib.sol";
+//import "./lib/LiquidityAmounts.sol";
 
 //TODO PERP add custom parameters: what leverage? When to rebalace? Etc
 struct CoreStrategyPerpConfig {
@@ -132,7 +133,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     }
 
     // Total liquidity in AMM
-    function totalLiquidity() public view returns (uint256 _liquidity) {
+    function getTotalLiquidity() public view returns (uint256 _liquidity) {
         OpenOrder.Info memory info = orderBook.getOpenOrder(
             address(this),
             address(short),
@@ -151,6 +152,23 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         uint160 sqrtMarkTwapX96 = exchange.getSqrtMarkTwapX96(
             address(baseToken),
             config.getTwapInterval()
+        );
+        uint256 markPriceX96 = PerpMath.formatSqrtPriceX96ToPriceX96(
+            sqrtMarkTwapX96
+        );
+
+        return PerpMath.formatX96ToX10_18(markPriceX96);
+    }
+
+    function getBaseTokenSpotPrice() public view returns (uint256) {
+        IExchange exchange = IExchange(perpVault.getExchange());
+        IClearingHouseConfig config = IClearingHouseConfig(
+            perpVault.getClearingHouseConfig()
+        );
+
+        uint160 sqrtMarkTwapX96 = exchange.getSqrtMarkTwapX96(
+            address(baseToken),
+            0
         );
         uint256 markPriceX96 = PerpMath.formatSqrtPriceX96ToPriceX96(
             sqrtMarkTwapX96
@@ -185,14 +203,34 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     function balanceDeployed() public view returns (uint256) {
         return uint256(perpVault.getAccountValue(address(this)));
     }
+    // calculate total value of short deployed
+    function shortDeployed() public view returns (uint256 _shortAmount) {
+            //uint256 sqrtMarkPriceX96 = PerpMath.getSqrtRatioAtTick(getBaseTokenMarkTwapTick());
+            return LiquidityAmounts.getAmount0ForLiquidity(
+            TickMath.getSqrtRatioAtTick(getBaseTokenMarkTwapTick()) > TickMath.getSqrtRatioAtTick(lowerTick) ? TickMath.getSqrtRatioAtTick(getBaseTokenMarkTwapTick()) : TickMath.getSqrtRatioAtTick(lowerTick),
+            TickMath.getSqrtRatioAtTick(upperTick),
+            uint128(getTotalLiquidity())
+        );
+    }
+
+    // calculate total value of want deployed
+    function wantDeployed() public view returns (uint256 _shortAmount) {
+            return LiquidityAmounts.getAmount1ForLiquidity(
+            TickMath.getSqrtRatioAtTick(lowerTick),
+            TickMath.getSqrtRatioAtTick(upperTick),
+            uint128(getTotalLiquidity())
+        );
+    }
 
     // debt ratio - used to trigger rebalancing of debt
     function calcDebtRatio() public view returns (uint256) {
-        uint256 shortAmount = orderBook.getTotalOrderDebt(
-            address(this),
-            address(short),
-            true
-        );
+        // uint256 shortAmount = orderBook.getTotalOrderDebt(
+        //     address(this),
+        //     address(short),
+        //     true
+        // );
+        uint256 shortAmount = shortDeployed();
+
         if (shortAmount == 0) {
             return 0;
         }
@@ -201,7 +239,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         //     address(short),
         //     false
         // );
-        shortAmount = shortAmount.mul(getBaseTokenMarkTwapPrice()).div(
+        shortAmount = shortAmount.mul(getBaseTokenSpotPrice()).div(
             (uint256(10)**uint256(18))
         );
         uint256 ratio = _getTotalDebt()
@@ -408,14 +446,14 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         internal
         returns (IClearingHouse.RemoveLiquidityResponse memory _resp)
     {
-        require(totalLiquidity() > 0, "RL_LIQ");
+        require(getTotalLiquidity() > 0, "RL_LIQ");
         _collectPendingFees();
         IClearingHouse.RemoveLiquidityParams memory params = IClearingHouse
             .RemoveLiquidityParams({
                 baseToken: address(short),
                 lowerTick: lowerTick,
                 upperTick: upperTick,
-                liquidity: uint128(totalLiquidity()),
+                liquidity: uint128(getTotalLiquidity()),
                 minBase: 0,
                 minQuote: 0,
                 deadline: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
@@ -460,7 +498,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
 
     function _harvestInternal() internal returns (uint256 _wantHarvested) {
         //TODO PERP how does the farming work? Do we need to harvest and auto-compound? Is it all automatic?
-        if (totalLiquidity() < DUST_LIQ) {
+        if (getTotalLiquidity() < DUST_LIQ) {
             return 0;
         }
         IClearingHouse.RemoveLiquidityResponse
@@ -510,12 +548,12 @@ abstract contract CoreStrategyPerp is BaseStrategy {
                 quote: amountInSTD.div(2),
                 lowerTick: lowerTick,
                 upperTick: upperTick,
-                minBase: amountShortNeeded.mul(slippageAdj).div(
-                    BASIS_PRECISION
-                ),
-                minQuote: (amountInSTD.div(2)).mul(slippageAdj).div(
-                    BASIS_PRECISION
-                ),
+                minBase: 0, //amountShortNeeded.mul(slippageAdj).div(
+                //    BASIS_PRECISION
+                //),
+                minQuote: 0, //(amountInSTD.div(2)).mul(slippageAdj).div(
+                //    BASIS_PRECISION
+                //),
                 useTakerBalance: bool(false),
                 deadline: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
             });
@@ -533,7 +571,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     }
 
     function _collectPendingFees()
-        internal
+        public
         returns (IClearingHouse.RemoveLiquidityResponse memory _resp)
     {
         IClearingHouse.RemoveLiquidityParams memory params = IClearingHouse
@@ -546,10 +584,15 @@ abstract contract CoreStrategyPerp is BaseStrategy {
                 minQuote: 0,
                 deadline: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
             });
-        _resp = clearingHouse.removeLiquidity(params);
+        try clearingHouse.removeLiquidity(params) returns (IClearingHouse.RemoveLiquidityResponse memory _resp) {
+            //_resp = resp;
+        } catch Error(string memory reason) {
+            emit Log(reason,2);
+        }
+        //_resp = clearingHouse.removeLiquidity(params);
     }
-
-    function _closePosition() internal returns (uint256 _base, uint256 _quote) {
+    event Log(string log, uint256 number);
+    function _closePosition() public returns (uint256 _base, uint256 _quote) {
         IClearingHouse.ClosePositionParams memory params = IClearingHouse
             .ClosePositionParams({
                 baseToken: address(short),
@@ -558,11 +601,20 @@ abstract contract CoreStrategyPerp is BaseStrategy {
                 deadline: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff,
                 referralCode: bytes32(bytes("ROBO"))
             });
-        (_base, _quote) = clearingHouse.closePosition(params);
+        try clearingHouse.closePosition(params) returns (uint256 base, uint256 quote){
+            //emit Debug(base, 808);
+            //emit Debug(quote, 809);
+            _base = base;
+            _quote = quote;
+
+        } catch Error(string memory reason) {
+            emit Log(reason,1);
+        }
+        //(_base, _quote) = clearingHouse.closePosition(params);
     }
 
     function _deployFromLend(uint256 _amount) internal {
-        if (totalLiquidity() > 0) {
+        if (getTotalLiquidity() > 0) {
             liquidateAllToLend();
         }
         _determineTicks();
@@ -574,8 +626,9 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         uint256 debtRatio = calcDebtRatio();
         emit DebtRebalance(debtRatio, balanceDeployed(), 0);
         // Liquidate all the lend, leaving none in debt or as short
-        if (totalLiquidity() > 0) {
+        if (getTotalLiquidity() > 0) {
             liquidateAllToLend();
+            _closePosition();
         }
         _deployFromLend(estimatedTotalAssets());
     }
@@ -585,8 +638,9 @@ abstract contract CoreStrategyPerp is BaseStrategy {
 
         emit CollatRebalance(collatRatio, balanceDeployed());
         // Liquidate all the lend, leaving none in debt or as short
-        if (totalLiquidity() > 0) {
+        if (getTotalLiquidity() > 0) {
             liquidateAllToLend();
+            _closePosition();
         }
         _deployFromLend(estimatedTotalAssets());
     }
@@ -614,6 +668,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
             .sub(balanceWant)
             .mul(BASIS_PRECISION)
             .div(deployed);
+        emit Debug(stratPercent, 601);
         if (stratPercent > 9500) {
             // If this happened, we just undeploy the lot
             // and it'll be redeployed during the next harvest.
@@ -621,9 +676,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
             _liquidatedAmount = balanceOfWant().sub(balanceWant);
         } else {
             liquidateAllToLend();
-            _amountNeeded = _amountNeeded.mul(stratPercent).div(
-                BASIS_PRECISION
-            );
+            _amountNeeded = _amountNeeded;
             _removeCollateral(_amountNeeded);
             if (_getTotalDebt() > _amountNeeded) {
                 _addLiquidityToShortMarket(deployed.sub(_amountNeeded));
