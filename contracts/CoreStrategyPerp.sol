@@ -127,12 +127,19 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         return "StrategyHedgedPerp";
     }
 
-    // reserves
+
+    /**
+    * @dev Returns the balance of `want` tokens held by this contract.
+    * @return The amount of `want` tokens held by this contract.
+    */
     function balanceOfWant() public view returns (uint256) {
         return (want.balanceOf(address(this)));
     }
 
-    // Total liquidity in AMM
+    /**
+    * @dev Returns the total liquidity of this contract for the specified trading pair within the given price range.
+    * @return _liquidity The total liquidity of this contract for the specified trading pair within the given price range.
+    */
     function getTotalLiquidity() public view returns (uint256 _liquidity) {
         OpenOrder.Info memory info = orderBook.getOpenOrder(
             address(this),
@@ -143,6 +150,14 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         return uint256(info.liquidity);
     }
 
+    /**
+    * @notice Get the TWAP (Time-Weighted Average Price) of the base token in terms of the quote token.
+    * The TWAP is computed based on the price observations of the base token over a fixed time interval,
+    * as specified in the clearing house configuration. The function returns the price in units of
+    * 10^18 of the quote token per unit of the base token. (e.g. USD per VETH)
+    *
+    * @return The TWAP price of the base token in units of 10^18 of the quote token per unit of the base token.
+    */
     function getBaseTokenMarkTwapPrice() public view returns (uint256) {
         IExchange exchange = IExchange(perpVault.getExchange());
         IClearingHouseConfig config = IClearingHouseConfig(
@@ -160,6 +175,13 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         return PerpMath.formatX96ToX10_18(markPriceX96);
     }
 
+    /**
+    * @dev Returns the current spot price of the base token in quote token units.
+    * The spot price is calculated as the current TWAP (time-weighted average price) of the base token
+    * over a configurable period of time (specified in the clearing house configuration), converted to
+    * quote token units using the current quote token's decimals.
+    * @return uint256 representing the current spot price of the base token in quote token units
+    */
     function getBaseTokenSpotPrice() public view returns (uint256) {
         IExchange exchange = IExchange(perpVault.getExchange());
         IClearingHouseConfig config = IClearingHouseConfig(
@@ -177,7 +199,10 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         return PerpMath.formatX96ToX10_18(markPriceX96);
     }
 
-    // Get short Mark Price (used for lending market) which is derived from Uniswap TWAP
+    /**
+    * @notice Returns the spot price of the base token in terms of the quote token.
+    * @return The spot price of the base token in terms of the quote token, represented in 18 decimal places.
+    */
     function getBaseTokenMarkTwapTick() public view returns (int24) {
         IExchange exchange = IExchange(perpVault.getExchange());
         IClearingHouseConfig config = IClearingHouseConfig(
@@ -194,16 +219,28 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         return TickMath.getTickAtSqrtRatio(sqrtMarkTwapX96);
     }
 
-    // calculate total value of vault assets
+    /**
+    * @notice Returns the estimated total assets of this contract, which is the sum of the balance of the `want` token
+    * and the balance of the deployed tokens. The deployed tokens are currently invested in external protocols.
+    * @return The estimated total assets of this contract in terms of `want` token.
+    */
     function estimatedTotalAssets() public view override returns (uint256) {
         return balanceOfWant().add(balanceDeployed());
     }
 
-    // calculate total value of vault assets
+    /**
+    * @notice Get the deployed balance of the contract in the Perpetual Protocol.
+    * @return The deployed balance of the contract in the Perpetual Protocol.
+    */
     function balanceDeployed() public view returns (uint256) {
         return uint256(perpVault.getAccountValue(address(this)));
     }
-    // calculate total value of short deployed
+    
+    /**
+    * @notice Calculates the total value of short position deployed in the Perpetual Protocol.
+    * more info: https://docs.perp.com/docs/guides/impermanent-loss
+    * @return _shortAmount The total value of short position deployed, denominated in quote tokens.
+    */
     function shortDeployed() public view returns (uint256 _shortAmount) {
             //uint256 sqrtMarkPriceX96 = PerpMath.getSqrtRatioAtTick(getBaseTokenMarkTwapTick());
             return LiquidityAmounts.getAmount0ForLiquidity(
@@ -213,16 +250,22 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         );
     }
 
-    // calculate total value of want deployed
-    function wantDeployed() public view returns (uint256 _shortAmount) {
-            return LiquidityAmounts.getAmount1ForLiquidity(
-            TickMath.getSqrtRatioAtTick(lowerTick),
-            TickMath.getSqrtRatioAtTick(upperTick),
-            uint128(getTotalLiquidity())
-        );
-    }
+    // TODO
+    // function wantDeployed() public view returns (uint256 _shortAmount) {
+    //         return LiquidityAmounts.getAmount1ForLiquidity(
+    //         TickMath.getSqrtRatioAtTick(lowerTick),
+    //         TickMath.getSqrtRatioAtTick(upperTick),
+    //         uint128(getTotalLiquidity())
+    //     );
+    // }
 
-    // debt ratio - used to trigger rebalancing of debt
+    /**
+    * @notice Calculates the current debt ratio of the strategy. 
+    * @dev Debt ratio is the total debt of the strategy divided by two divided by the total value of short positions deployed.
+    * We divide by two because only short is considered. The contract collateral is assumed to be the quote token,
+    * and in a balanced position we will be borrowing half quote and half base token.
+    * @return The current debt ratio of the strategy, expressed in basis points (i.e. 10000 basis points = 100%).
+    */
     function calcDebtRatio() public view returns (uint256) {
         // uint256 shortAmount = orderBook.getTotalOrderDebt(
         //     address(this),
@@ -234,11 +277,6 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         if (shortAmount == 0) {
             return 0;
         }
-        // uint256 longAmount = orderBook.getTotalOrderDebt(
-        //     address(this),
-        //     address(short),
-        //     false
-        // );
         shortAmount = shortAmount.mul(getBaseTokenSpotPrice()).div(
             (uint256(10)**uint256(18))
         );
@@ -251,7 +289,11 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         return ratio;
     }
 
-    // calculate debt / collateral - used to trigger re-balancing of debt & collateral
+    /**
+    * @notice Calculates the collateralization ratio of the strategy
+    * @dev Collateralization ratio = Free Collateral / Total Debt
+    * @return The collateralization ratio in BASIS_PRECISION (10000 = 100%)
+    */
     function calcCollateral() public view returns (uint256) {
         return
             perpVault.getFreeCollateral(address(this)).mul(BASIS_PRECISION).div(
@@ -259,7 +301,10 @@ abstract contract CoreStrategyPerp is BaseStrategy {
             );
     }
 
-    // View pending fees (not optimism) in USD terms
+    /**
+    * @dev Calculates the pending rewards that can be claimed by the strategy from the order book.
+    * @return The amount of pending rewards in wei denominated in quote tokens.
+    */
     function pendingRewards() public view returns (uint256) {
         return
             orderBook.getPendingFee(
@@ -274,27 +319,44 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         return vault.strategies(address(this)).totalDebt;
     }
 
+    /**
+    * @notice Updates the slippage adjustment value used for trading.
+    * @param _slippageAdj The new slippage adjustment value to be set.
+    * @dev Only authorized addresses can call this function.
+    */
     function setSlippageConfig(uint256 _slippageAdj) external onlyAuthorized {
         slippageAdj = _slippageAdj;
     }
 
+    /**
+    * @dev Sets the insurance contract for this strategy.
+    * @param _insurance The address of the insurance contract.
+    * Requirements:
+    * The insurance contract must not have already been set.
+    * The insurance contract address must not be zero.
+    */
     function setInsurance(address _insurance) external onlyAuthorized {
         require(address(insurance) == address(0));
         require(address(_insurance) != address(0));
         insurance = IStrategyInsurance(_insurance);
     }
 
+    /**
+    * @notice Set the Perpetual Protocol Vault contract address
+    * @dev Only authorized addresses are allowed to call this function
+    * BE CAREFUL: CALLING THIS CAN BRICK THE CONTRACT
+    * @param _vault The address of the new Perpetual Protocol Vault contract to be set
+    */
     function setPerpVault(address _vault) external onlyAuthorized {
         perpVault = IVault(_vault);
     }
 
     /**
-     * function to set debt thresholds before rebalancing
-     *
-     * @param _lower lower debt ratio
-     * @param _upper upper debt ratio
-     */
-
+    * @dev Set the debt thresholds for the strategy.
+    * @param _lower The lower threshold of the debt ratio, represented in BASIS_PRECISION.
+    * @param _upper The upper threshold of the debt ratio, represented in BASIS_PRECISION.
+    * Only authorized addresses can execute this function.
+    */
     function setDebtThresholds(uint256 _lower, uint256 _upper)
         external
         onlyAuthorized
@@ -308,6 +370,14 @@ abstract contract CoreStrategyPerp is BaseStrategy {
         //debtMultiple = _debtMultiple;
     }
 
+    /**
+    * @notice Sets the collateral thresholds for the strategy
+    * @param _lower The lower collateral threshold as a percentage of total debt, in BASIS_PRECISION
+    * @param _debtMultiple The debt multiple used to calculate collateral, in BASIS_PRECISION
+    * @param _upper The upper collateral threshold as a percentage of total debt, in BASIS_PRECISION
+    * @param _limit The collateral limit as a percentage of total debt, in BASIS_PRECISION
+    */
+    //TODO: revisit parameters order
     function setCollateralThresholds(
         uint256 _lower,
         uint256 _debtMultiple,
@@ -571,7 +641,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
     }
 
     function _collectPendingFees()
-        public
+        internal
         returns (IClearingHouse.RemoveLiquidityResponse memory _resp)
     {
         IClearingHouse.RemoveLiquidityParams memory params = IClearingHouse
@@ -584,15 +654,15 @@ abstract contract CoreStrategyPerp is BaseStrategy {
                 minQuote: 0,
                 deadline: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
             });
-        try clearingHouse.removeLiquidity(params) returns (IClearingHouse.RemoveLiquidityResponse memory _resp) {
-            //_resp = resp;
+        try clearingHouse.removeLiquidity(params) returns (IClearingHouse.RemoveLiquidityResponse memory resp) {
+            _resp = resp;
         } catch Error(string memory reason) {
-            emit Log(reason,2);
+            emit LogError(reason,2);
         }
         //_resp = clearingHouse.removeLiquidity(params);
     }
-    event Log(string log, uint256 number);
-    function _closePosition() public returns (uint256 _base, uint256 _quote) {
+    event LogError(string log, uint256 number);
+    function _closePosition() internal returns (uint256 _base, uint256 _quote) {
         IClearingHouse.ClosePositionParams memory params = IClearingHouse
             .ClosePositionParams({
                 baseToken: address(short),
@@ -608,7 +678,7 @@ abstract contract CoreStrategyPerp is BaseStrategy {
             _quote = quote;
 
         } catch Error(string memory reason) {
-            emit Log(reason,1);
+            emit LogError(reason,1);
         }
         //(_base, _quote) = clearingHouse.closePosition(params);
     }
@@ -676,7 +746,6 @@ abstract contract CoreStrategyPerp is BaseStrategy {
             _liquidatedAmount = balanceOfWant().sub(balanceWant);
         } else {
             liquidateAllToLend();
-            _amountNeeded = _amountNeeded;
             _removeCollateral(_amountNeeded);
             if (_getTotalDebt() > _amountNeeded) {
                 _addLiquidityToShortMarket(deployed.sub(_amountNeeded));

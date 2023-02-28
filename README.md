@@ -35,12 +35,22 @@
 <!-- ABOUT THE PROJECT -->
 ## RoboLabs Perp Vault Contracts
 
-This repo contains the contracts for the RoboLabs Perp Vault
-
+This repo contains the contracts for the RoboLabs Perp Vault. The strategy employed by the contract is to lend USD-pegged tokens which should be the same price as the `Quote` token, and borrow the `Base` token from Perpetual in order to provide concentrated and automated liquidity on the pair. The fees and rewards collected from this process are compounded. The price range for the position is updated as the price moves through `rebalance` operations. This contract also supports leveraging the position up to 10X in accordance with the perpetual protocol.
 
 <!-- GETTING STARTED -->
 ## Getting Started
-Configure WETHPERP.sol to use the parameters you desire
+
+To get started with this project, follow these steps:
+
+1. Clone this repository to your local machine.
+2. Install the necessary dependencies by running `npm install`
+3. Configure `WETHPERP.sol` to use the parameters you desire.
+4. Compile the contracts by running `brownie compile`.
+5. Add optimism and fork to brownie running
+>brownie networks add development op-fork cmd=ganache-cli host=http://127.0.0.1/ fork=optimism-main accounts=10 mnemonic=brownie port=8545
+5. Test the contracts by running 
+> brownie test tests/op/test_vault_wrapper.py --network op-fork
+6. Lint the code by running `npm run lint`.
 ### Install Dependencies 
 
 Requires npm and pip. See .github/workflows for suitable versions. 
